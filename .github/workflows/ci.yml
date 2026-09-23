@@ -59,3 +59,25 @@ jobs:
         run: ruff check .
       - name: Ruff format check
         run: ruff format --check .
+
+  claims:
+    name: verify documented numbers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # README / docs 里引用了大量实测数字。这个步骤把它们全部重算一遍并逐项比对，
+      # 任何数字因为默认参数变化而失效，都会让 CI 失败 —— 避免「代码改了、文档没改」
+      # 这种对「结果诚实」类项目最致命的问题。
+      - name: Verify every number claimed in README / docs
+        run: python scripts/verify_claims.py
