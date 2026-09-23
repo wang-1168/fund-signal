@@ -1,0 +1,23 @@
+# fund-signal · Streamlit 界面主题
+# 固定为浅色主题，保证任何机器上打开都是同一套观感（避免跟随系统深色模式后
+# 与图表配色打架）。图表颜色由 app.py 里的 LIGHT / DARK 两套色板控制，
+# 把 base 改成 "dark" 也能整体协调。
+
+[theme]
+base = "light"
+primaryColor = "#C9861A"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F7FA"
+textColor = "#1B1F24"
+font = "sans serif"
+
+[server]
+headless = true
+fileWatcherType = "auto"
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = true
