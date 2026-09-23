@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fund-signal"
+version = "0.1.0"
+description = "公募基金量化信号分析框架 —— 方法论严谨、结果诚实的开源工具"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "fund-signal contributors" },
+]
+keywords = [
+    "quant", "quantitative-finance", "mutual-fund", "fund",
+    "machine-learning", "walk-forward", "backtest", "time-series",
+    "akshare", "python", "streamlit", "lightgbm",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Education",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.23,<3",
+    "pandas>=1.5,<4",
+    "scikit-learn>=1.0",
+    "lightgbm>=3.3",
+    "akshare>=1.10",
+    "streamlit>=1.28",
+    "plotly>=5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/wang-1168/fund-signal"
+Repository = "https://github.com/wang-1168/fund-signal"
+Issues = "https://github.com/wang-1168/fund-signal/issues"
+Changelog = "https://github.com/wang-1168/fund-signal/blob/main/CHANGELOG.md"
+
+[project.scripts]
+fund-signal = "fund_signal.__main__:main"
+
+[tool.setuptools]
+packages = ["fund_signal"]
+
+[tool.setuptools.package-data]
+fund_signal = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning:akshare.*",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".git", "__pycache__", "build", "dist", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "PERF"]
+ignore = [
+    "E501",    # 行长由 formatter 控制
+    "B008",    # 允许在默认参数里调用函数
+    "PERF203", # try/except 在循环里是必要的（重试逻辑）
+    "UP009",   # 刻意保留 `# -*- coding: utf-8 -*-`：
+               # 本项目读者多为 Windows 用户，显式声明可避免 GBK 默认编码下的编辑器乱码
+    "C408",    # Plotly / sklearn 惯用 `line=dict(color=..., width=...)` 关键字风格，
+               # 改成字面量反而降低可读性
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+
+[tool.coverage.run]
+source = ["fund_signal"]
+omit = ["*/tests/*", "*/__main__.py"]

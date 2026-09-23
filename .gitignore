@@ -1,0 +1,80 @@
+# ---------------- Python ----------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# ---------------- 测试 / 覆盖率 ----------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ---------------- 类型检查 / 缓存 ----------------
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# ---------------- IDE ----------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------- Jupyter ----------------
+.ipynb_checkpoints/
+
+# ---------------- 本项目专属 ----------------
+# 数据缓存（体积大且可重新拉取，不入库）
+# 注意：写成 `data/cache/*` 而不是 `data/cache/`，
+# 这样目录本身不被忽略，才能用 `!` 把 .gitkeep 加回来。
+data/cache/*
+!data/cache/.gitkeep
+data/*.csv
+data/*.parquet
+
+# 训练好的模型文件
+models/*
+!models/.gitkeep
+*.pkl
+*.joblib
+*.lgb
+*.model
+
+# 注意：examples/sample_data/ 下的离线样例数据**需要提交**，
+# 它是「断网也能跑通」和 CI 离线测试的基础，请不要加入忽略列表。

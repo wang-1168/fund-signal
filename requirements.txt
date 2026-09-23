@@ -1,0 +1,27 @@
+# fund-signal 依赖清单
+# 安装：pip install -r requirements.txt
+# 国内加速：pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+#
+# 已在 Python 3.13 + Windows 11 上完整验证的版本组合：
+#   numpy 2.5.3 / pandas 3.0.6 / scikit-learn 1.9.1 / lightgbm 4.7.0
+#   akshare 1.18.96 / streamlit 1.64.0 / plotly 7.1.0 / pytest 9.1.1
+
+# ---------------- 数据处理 ----------------
+numpy>=1.23,<3
+pandas>=1.5,<4
+
+# ---------------- 建模 ----------------
+scikit-learn>=1.0
+lightgbm>=3.3
+
+# ---------------- 数据源 ----------------
+# akshare 免费、开源、无需注册 token，但接口变动较频繁，
+# 建议保持较新版本。若某接口报错，先尝试 pip install -U akshare
+akshare>=1.10
+
+# ---------------- 交互界面 ----------------
+streamlit>=1.28
+plotly>=5.0
+
+# ---------------- 测试 ----------------
+pytest>=7.0

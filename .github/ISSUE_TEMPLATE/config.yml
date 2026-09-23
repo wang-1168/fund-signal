@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 先看看方法论说明
+    url: https://github.com/wang-1168/fund-signal/blob/main/docs/methodology.md
+    about: 关于「为什么模型预测不准」「回测为什么是负的」，这里已经解释过了。
+  - name: 贡献指南
+    url: https://github.com/wang-1168/fund-signal/blob/main/CONTRIBUTING.md
+    about: 提 PR 之前请先读这个，尤其是「未来函数」一节。
+  - name: 使用问题 / 讨论
+    url: https://github.com/wang-1168/fund-signal/discussions
+    about: 安装报错、想讨论量化思路，请走 Discussions 而不是 Issue。
