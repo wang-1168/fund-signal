@@ -76,5 +76,9 @@ models/*
 *.lgb
 *.model
 
+# 截图/调试用的临时脚本副本（由外部工具生成，用完即删）
+_shot_app.py
+_shot_*.png
+
 # 注意：examples/sample_data/ 下的离线样例数据**需要提交**，
 # 它是「断网也能跑通」和 CI 离线测试的基础，请不要加入忽略列表。

@@ -34,6 +34,7 @@ classifiers = [
 dependencies = [
     "numpy>=1.23,<3",
     "pandas>=1.5,<4",
+    "scipy>=1.8",
     "scikit-learn>=1.0",
     "lightgbm>=3.3",
     "akshare>=1.10",

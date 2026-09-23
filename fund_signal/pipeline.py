@@ -20,10 +20,13 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from . import audit
 from . import backtest as bt
 from . import data as dt
 from . import features as ft
+from . import metrics as mt
 from . import model as md
+from .audit import accuracy_to_auc
 from .config import Config
 from .utils import get_logger
 
@@ -49,6 +52,8 @@ class AnalysisResult:
     equity: pd.DataFrame  # 净值曲线对照
     realtime: dict = field(default_factory=dict)  # 元信息 / 最新净值 / 盘中估值
     notes: list[str] = field(default_factory=list)  # 过程中的警告/提示
+    capability: dict = field(default_factory=dict)  # 能力边界体检
+    raw_metrics: dict = field(default_factory=dict)  # 校准前概率的指标
 
     # ---------------------------------------------------------------- 实时数据
     @property
@@ -235,8 +240,17 @@ def run_analysis(
         threshold=cfg.threshold,
         random_state=cfg.random_state,
         model_params=model_params,
+        embargo=cfg.horizon if cfg.embargo else 0,
+        calibrate=cfg.calibrate,
         verbose=True,
     )
+    if cfg.calibrate and wf.calibrate_method == "none":
+        notes.append("样本量不足，本折未启用概率校准（沿用原始概率）。")
+    elif wf.calibrate_method != "none":
+        notes.append(
+            f"已启用样本外概率校准（{wf.calibrate_method}）：训练集尾部 20% "
+            "专用于拟合校准器，模型本体未见这部分样本。"
+        )
 
     # ---------------------------------------------------------- 5. 最终模型
     emit("训练最终模型、生成最新信号…", 0.70)
@@ -268,12 +282,34 @@ def run_analysis(
     )
     equity = bt.build_equity_frame(backtest_result)
 
-    # ---------------------------------------------------------- 7. 结语
+    # ---------------------------------------------------------- 7. 能力边界体检
+    emit("能力边界体检…", 0.95)
+    capability: dict = {}
+    raw_metrics: dict = {}
+    try:
+        capability = audit.capability_report(oos_prob, y.loc[oos_prob.index], target_accuracy=0.90)
+        raw_metrics = mt.classification_metrics(
+            y.loc[oos_prob.index].to_numpy(),
+            (wf.raw_predictions if wf.raw_predictions is not None else oos_prob)
+            .loc[oos_prob.index]
+            .to_numpy(),
+            cfg.threshold,
+        )
+    except Exception as err:  # 体检失败不应影响主流程
+        log.warning("能力边界体检失败（不影响主流程）：%s", err)
+
+    # ---------------------------------------------------------- 8. 结语
     if not (wf.overall_metrics.get("acc_edge") or 0) > 0.02:
         notes.append(
             "模型准确率未明显超过「多数类基线」——这在基金日频预测中是常见结果，"
             "说明该基金在未来一个交易日上的方向变化接近随机。"
         )
+    need_auc = accuracy_to_auc(0.90)
+    notes.append(
+        f"能力边界：准确率 90% 需要 AUC ≈ {need_auc:.3f}，本次实测 AUC "
+        f"= {wf.overall_metrics.get('auc', float('nan')):.3f}。"
+        "想靠调参补齐这个缺口，只会得到过拟合（见「精度审计」页签的复杂度曲线）。"
+    )
 
     emit("分析完成", 1.0)
 
@@ -290,6 +326,8 @@ def run_analysis(
         equity=equity,
         realtime=realtime_info,
         notes=notes,
+        capability=capability,
+        raw_metrics=raw_metrics,
     )
 
 

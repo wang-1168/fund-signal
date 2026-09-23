@@ -4,7 +4,39 @@
 
 ## [Unreleased]
 
-_暂无_
+### 新增 Added
+
+**能力边界审计（新模块 `fund_signal.audit`）**
+
+- `auc_to_accuracy` / `accuracy_to_auc` / `auc_accuracy_curve`：AUC 与最优判定准确率的理论换算。推导给出 **准确率 90% 需要 AUC ≈ 0.965** 这条硬约束。
+- `complexity_path`：5 档复杂度 × 滚动前向验证，同时记录训练准确率与样本外准确率，画出**过拟合/欠拟合的完整地形图**（实测训练 56%→100%，样本外始终 50%~52%）。
+- `leakage_audit`：三组对照（正常 / 答案入特征 / 未来函数标签）证明「高准确率无法证明模型有效」——答案入特征时**严格滚动前向也会给出 100% 准确率**，而未来函数标签几乎不改变准确率。
+- `confidence_subset_table` / `selective_accuracy_table`：等频置信度分层与选择性预测（用覆盖率换准确率），并把「层内多数类基线」并排摆出来，防止把行情好误认成模型强。
+- `calibration_diagnostics` / `capability_report`：ECE / MCE / Brier 与能力边界汇总。
+
+**建模层**
+
+- 新增 `model_type="ensemble"`：LightGBM + 逻辑回归 + ExtraTrees + GBDT 四模型软投票，`feature_importance` 改为逐成员归一化后取平均。
+- `walk_forward_validate` 新增 **`embargo` 净化间隔**（丢弃紧邻测试段的 `horizon` 个训练样本，切断标签窗口重叠泄漏）与 **`calibrate` 样本外概率校准**（每折内部用训练集尾部 20% 拟合 isotonic 校准器）。
+- `WalkForwardResult` 新增 `raw_predictions` / `calibrate_method`，校准前后概率可对比。
+- 新增 `fit_calibrator` / `apply_calibrator`，样本不足或单一类别时优雅回退。
+
+**界面（6 → 8 页签）**
+
+- 新增 **🧭 风控与仓位**：校准概率 → 分段线性仓位映射（附纯 Kelly 与 1/4 Kelly 参照）、置信度分层、选择性预测、校准前后概率分布、同波动率档位条件收益分布、压力测试。
+- 新增 **🛡️ 精度审计**：AUC→准确率理论曲线（标注实测点与 90% 目标线）、复杂度地形、泄漏审计、多数类基线对照、五种「刷准确率」手段的代价表、选择性预测曲线。
+- **canvas 粒子背景** + 玻璃拟态 KPI 卡片 + 渐变区块标题 + 入场动效，可在侧边栏一键关闭；深浅色自适应。
+- 侧边栏新增模型集成 / 概率校准 / 净化间隔 / 粒子背景开关，并新增「稳健（四模型集成 6 折）」预设。
+
+**其他**
+
+- 依赖新增 `scipy`（能力边界审计的正态分位换算）。
+- 测试从 63 项扩充到 **81 项**（新增 `tests/test_audit.py` 与模型层校准/净化/集成测试）。
+
+### 变更 Changed
+
+- 界面 `st.components.v1.html` 迁移到 `st.iframe`（Streamlit 1.63+，旧版自动回退）。
+- 百分比列统一改用 `NumberColumn(format="percent")`，修复覆盖率/仓位显示成 1% 而非 100% 的错误。
 
 ---
 

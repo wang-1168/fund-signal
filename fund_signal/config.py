@@ -25,7 +25,7 @@ for _d in (DATA_DIR, CACHE_DIR, MODEL_DIR):
 
 # ---------------------------------------------------------------- 类型别名
 
-ModelType = Literal["lightgbm", "logistic"]
+ModelType = Literal["lightgbm", "logistic", "ensemble"]
 DataSource = Literal["akshare", "local"]
 
 # ---------------------------------------------------------------- 默认基准指数
@@ -50,7 +50,7 @@ class Config:
     benchmark:
         基准指数 akshare 代码，用于构造相对强弱特征。
     model_type:
-        ``"lightgbm"`` 或 ``"logistic"``。
+        ``"lightgbm"`` / ``"logistic"`` / ``"ensemble"``（四模型软投票）。
     threshold:
         回测中判定为「看多」的概率阈值，默认 0.5。
     train_ratio:
@@ -68,6 +68,12 @@ class Config:
     realtime:
         是否启用实时数据能力：分析前把净值序列补齐到最新交易日，
         并尝试抓取盘中估值。关闭后只用历史净值接口的数据（更省流量）。
+    calibrate:
+        是否在每折内部做样本外概率校准（isotonic）。开启后输出的概率
+        具备频率含义，可直接用于仓位映射与置信度筛选。
+    embargo:
+        是否启用净化间隔。开启时丢弃紧邻测试段的 ``horizon`` 个训练样本，
+        切断「标签窗口重叠」造成的隐性泄漏。属于严谨性开关，对结果影响很小。
     """
 
     fund_code: str = "000001"
@@ -83,6 +89,8 @@ class Config:
     random_state: int = 42
     use_cache: bool = True
     realtime: bool = True
+    calibrate: bool = True
+    embargo: bool = True
 
     def to_dict(self) -> dict:
         """导出为普通字典（便于日志与界面展示）。"""
@@ -104,7 +112,7 @@ class Config:
             raise ValueError(f"train_ratio 必须在 (0, 1) 之间，收到 {self.train_ratio}")
         if self.n_splits < 2:
             raise ValueError(f"n_splits 必须 >= 2，收到 {self.n_splits}")
-        if self.model_type not in ("lightgbm", "logistic"):
+        if self.model_type not in ("lightgbm", "logistic", "ensemble"):
             raise ValueError(f"未知 model_type: {self.model_type!r}")
         if self.cost_bps < 0:
             raise ValueError(f"cost_bps 不能为负，收到 {self.cost_bps}")
