@@ -9,6 +9,7 @@ fund-signal —— 公募基金量化信号分析框架。
 --------
 data       : 基金净值与基准指数数据获取（akshare）+ 本地缓存
 features   : 特征工程（严格避免未来函数）
+events     : 日程事件日历 + 事件影响检验 + 安慰剂检验
 model      : 时序交叉验证与模型训练（LightGBM / 逻辑回归）
 backtest   : 基于概率阈值的策略回测
 metrics    : 分类与绩效评估指标
@@ -36,7 +37,7 @@ import warnings as _warnings
 
 from .config import Config
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "__version__",

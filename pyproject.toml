@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fund-signal"
-version = "0.2.0"
+version = "0.3.0"
 description = "公募基金量化信号分析框架 —— 方法论严谨、结果诚实的开源工具"
 readme = "README.md"
 requires-python = ">=3.10"

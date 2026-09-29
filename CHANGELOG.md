@@ -2,9 +2,48 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.3.0] - 2026-09-29
 
-_暂无_
+「事件与风险」版本。正面回答一个一定会被问到、且最容易做错的问题：**把重大事件和新闻加进去，预测会不会更准？** 结论是**不会**，而且给出了可复现的证据链。
+
+### 新增 Added
+
+**事件模块（新模块 `fund_signal.events`）**
+
+- `scheduled_events` / `upcoming_events`：**规则化日程事件日历**（LPR、MLF、PMI、CPI、社融、投资消费、GDP、政治局会议、中央经济工作会议、两会、指数样本调整、基金定期报告、季末资金面）。与「抓新闻」不同，这些日期是**算出来的**——因此历史与**未来**都能生成，且完全离线、CI 可跑。
+- `fetch_news` / `fetch_econ_calendar`：实时快讯（财联社 + 东财）与经济日历（含市场**预期值**）。网络失败返回空表而不抛异常，界面不会因此崩掉。
+- `event_impact`：检验「事件窗口 vs 非事件期」的收益、上涨概率与日波动差异。窗口默认收窄为「事件日 + 次一交易日」，并输出**覆盖率**列——第一版用宽窗口时覆盖率高达 93%、「非事件期」只剩零星样本，所谓「胜率差 +4pp」纯属采样偏差，这一列就是用来暴露该问题的。
+- `placebo_test`：**安慰剂检验**。把事件日随机化后重算 `n_draws` 次，给出真实值在随机分布中的分位。两种对照模式：`shift`（就近平移 ±20 个交易日，保留「月内固定位置」）与 `uniform`（区间内均匀随机取日期，彻底打破日历结构）。
+- `event_summary_text` / `verdict_text` / `placebo_summary_text`：把上述结果压成人话。`verdict_text` 是**唯一**的最终判断来源——它强制要求安慰剂检验参与裁决，避免「波动比 < 1 所以事件改变风险」这种结论被单独摆出来。
+
+**界面（8 → 9 页签）**
+
+- 新增 **📅 事件与风险**：结论先行（一句话结论 + 4 张 KPI）→ 未来 7/14/30 天日程事件表 → 实时快讯 / 经济日历（折叠）→ **事件实测证据 + 安慰剂检验**（折叠）→ 「事件该怎么用」三条。
+- 新增 `_cached_placebo` 缓存（TTL 1 小时），并修好 `note()` / `section()` 的 Markdown 粗体：它们是裸 HTML 渲染，正文里的 `**重点**` 原先会原样显示成星号，现在统一转成 `<b>`。
+
+**文档与校验**
+
+- README 新增「事件到底能不能提高预测？」方法论小节、FAQ 条目、界面画廊第 3 页签截图与逐页签说明。
+- `scripts/verify_claims.py` 新增第 ⑨ 组**事件与安慰剂检验**校验，把事件相关数字一并锁进 CI，防止文档漂移。
+
+### 变更 Changed
+
+- 界面页签数 8 → 9；`docs/screenshots/` 顺延重编号（`03-events.webp` 起）。
+- 测试从 81 项扩充到 **114 项**（新增 `tests/test_events.py`，33 项）。
+
+### 修复 Fixed
+
+- **修复 `event_impact` 在单个事件类别样本不足时丢掉合并总览行**。「★ 全部事件窗口合并」这一行原先挂在「有任何类别通过样本量门槛」上，导致短区间内整张表为空——而那正是唯一要回答的问题。现在只要有任何事件窗口就给出总览，并用 `test_event_impact_summary_survives_small_event_samples` 锁住。
+- **修复 `_snap` 静默丢弃未来事件**。交易日历通常只覆盖到最后一个已公布净值日（截止昨天），直接用它吸附未来事件会全部匹配失败，「接下来有什么大事」整块变空。现在日历不覆盖目标日期时退回周末规则，并用 `test_snap_falls_back_when_calendar_does_not_cover_future` 与 `test_upcoming_events_returns_future_only` 锁住。
+- **修复 `fetch_news` 返回空标题行**（数据源夹杂只有时间没有标题的行），改为过滤 `""` / `nan` / `None`。
+- 修掉合并总览行波动比的除零警告；修掉 `app.py` 用 `date` 作回撤循环变量造成的导入遮蔽。
+
+### 已知限制 Known Limitations
+
+- **事件对日频方向没有可检验的作用**。这是结论，不是 bug。安慰剂检验显示：真实波动比落在随机化分布的第 14%~40% 位，方向胜率差也只有 −1.1 ~ −3.9 个百分点。
+- 单个事件类别中「看着很显著」的数字（如中央经济工作会议在 000001 上胜率差 −11.7%）来自最小样本（50 天），且日期在日历上固定——捕捉到的是**季节性**而非事件效应，在十几个类别里挑最极端的一个本身就是多重比较下的过拟合。界面会主动标注这类行。
+- 日程事件的具体日期是**规则推算**，`precision="approx"` 的类型（CPI、社融、GDP、政治会议）实际发布日会浮动 ±2 天，其窗口统计会被窗口噪声稀释。
+- 经济日历的**预期值拿不到历史快照**，因此无法用于无偏回测，只能实时展示。
 
 ---
 
@@ -173,6 +212,7 @@ _暂无_
 
 ---
 
-[Unreleased]: https://github.com/wang-1168/fund-signal/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/wang-1168/fund-signal/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/wang-1168/fund-signal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/wang-1168/fund-signal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/wang-1168/fund-signal/releases/tag/v0.1.0

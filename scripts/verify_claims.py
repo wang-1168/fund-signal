@@ -11,6 +11,9 @@ README 里引用的 AUC / 准确率 / 策略收益**全部失效**，而文档�
 所以这里把文档里所有引用过的数字集中成一份**可执行的声明清单**，每次运行都重新
 实算并逐项比对。任何一项漂移都会被显式标出来。
 
+覆盖 9 组：默认输出 / 三只基金对照 / 24 组扫描 / 复杂度地形 / 泄漏审计 / 校准 /
+选择性预测 / AUC 换算 / **事件影响与安慰剂检验**。
+
 用法::
 
     python scripts/verify_claims.py           # 完整校验（含 24 组扫描，约 1 分钟）
@@ -39,6 +42,7 @@ import pandas as pd  # noqa: E402
 
 from fund_signal import audit as ad  # noqa: E402
 from fund_signal import data as dt  # noqa: E402
+from fund_signal import events as ev  # noqa: E402
 from fund_signal import features as ft  # noqa: E402
 from fund_signal import model as md  # noqa: E402
 from fund_signal.config import Config  # noqa: E402
@@ -316,6 +320,55 @@ def main() -> int:
     print(f"\n   准确率 90% 需要 AUC = {need:.3f}（文档声明 0.965）")
     if abs(need - 0.965) > 0.001:
         rep.drift += 1
+    print()
+
+    # ---------------------------------------------------------- 9. 事件与安慰剂
+    print("=" * 78)
+    print("⑨ 事件影响与安慰剂检验（README「事件到底能不能提高预测？」章节）")
+    print("=" * 78)
+    ev_rows = []
+    for code, cov, ratio, wd, pct in [
+        ("000001", 0.176, 0.89, -0.011, 0.40),
+        ("320007", 0.176, 0.93, -0.039, 0.14),
+        ("161725", 0.176, 0.85, -0.018, 0.30),
+    ]:
+        nav = dt.load_sample_nav(code)
+        nav["date"] = pd.to_datetime(nav["date"])
+        cal = ev.scheduled_events(
+            nav["date"].iloc[0].date(), nav["date"].iloc[-1].date(), trade_dates=nav["date"]
+        )
+        imp = ev.event_impact(nav, cal, before=0, after=1, horizon=1, min_importance=3)
+        plc = ev.placebo_test(
+            nav,
+            cal,
+            before=0,
+            after=1,
+            horizon=1,
+            min_importance=3,
+            n_draws=200,
+            mode="uniform",
+        )
+        row = imp[imp["事件"].str.startswith("★")].iloc[0]
+        for claim, exp, act in [
+            (f"{code} 事件窗口覆盖率", cov, float(row["覆盖率"])),
+            (f"{code} 波动比", ratio, float(row["波动比"])),
+            (f"{code} 方向胜率差", wd, float(row["胜率差"])),
+            (f"{code} 安慰剂分位（均匀随机）", pct, float(plc["p_波动"])),
+        ]:
+            rep.check("⑨ 事件与安慰剂", claim, exp, act)
+        ev_rows.append(
+            {
+                "基金": code,
+                "覆盖率": float(row["覆盖率"]),
+                "波动比": float(row["波动比"]),
+                "胜率差": float(row["胜率差"]),
+                "安慰剂分位": float(plc["p_波动"]),
+            }
+        )
+    print(pd.DataFrame(ev_rows).to_string(index=False, float_format=lambda v: f"{v:.4f}"))
+    print("   说明：安慰剂分位若落在 5%~95% 之间，则该「效应」与随机日期无异。")
+    print()
+    print(rep.table("⑨ 事件与安慰剂").to_string(index=False))
     print()
 
     # ---------------------------------------------------------- 汇总

@@ -27,7 +27,9 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import OrderedDict
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -44,6 +46,7 @@ from sklearn.metrics import (
 
 from fund_signal import audit
 from fund_signal import data as dt
+from fund_signal import events as ev
 from fund_signal.backtest import backtest_threshold, sweep_thresholds
 from fund_signal.config import (
     CALENDAR_FEATURES,
@@ -432,9 +435,23 @@ def _flat(html: str) -> str:
     return " ".join(part.strip() for part in html.strip().splitlines())
 
 
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
+
+
+def _bold(html: str) -> str:
+    """把 Markdown 粗体 ``**x**`` 转成 HTML ``<b>x</b>``。
+
+    ``section()`` / ``note()`` 是**裸 HTML 渲染**（``unsafe_allow_html=True`` 下
+    Streamlit 不再解析 Markdown），所以正文里写 ``**重点**`` 会原样显示成星号。
+    把模块函数产生的说明文字（如 ``events.verdict_text``）直接塞进结论条时尤其
+    容易踩这个坑，这里统一兜住。
+    """
+    return _BOLD_RE.sub(r"<b>\1</b>", html)
+
+
 def section(title: str, desc: str = "") -> None:
     """区块标题：带左侧主色竖条。"""
-    d = f'<span class="fs-sec-d">{desc}</span>' if desc else ""
+    d = f'<span class="fs-sec-d">{_bold(desc)}</span>' if desc else ""
     st.markdown(
         _flat(f'<div class="fs-sec"><span class="fs-sec-t">{title}</span>{d}</div>'),
         unsafe_allow_html=True,
@@ -443,7 +460,7 @@ def section(title: str, desc: str = "") -> None:
 
 def note(html: str, tone: str = "info") -> None:
     """结论条。tone: info / ok / warn / bad。"""
-    st.markdown(_flat(f'<div class="fs-note {tone}">{html}</div>'), unsafe_allow_html=True)
+    st.markdown(_flat(f'<div class="fs-note {tone}">{_bold(html)}</div>'), unsafe_allow_html=True)
 
 
 def hero(title: str, code: str, sub: str, badges: list[tuple[str, str]]) -> None:
@@ -707,21 +724,21 @@ def drawdown_episodes(equity: pd.Series, top: int = 3) -> pd.DataFrame:
     in_dd = False
     start = trough = eq.index[0]
     min_dd = 0.0
-    for date, val in dd.items():
+    for day, val in dd.items():
         if val < -1e-9:
             if not in_dd:
-                in_dd, start, min_dd = True, date, val
-                trough = date
+                in_dd, start, min_dd = True, day, val
+                trough = day
             if val < min_dd:
-                min_dd, trough = val, date
+                min_dd, trough = val, day
         elif in_dd:
             episodes.append(
                 {
                     "开始": start,
                     "谷底": trough,
-                    "恢复": date,
+                    "恢复": day,
                     "最大回撤": min_dd,
-                    "持续(交易日)": int(eq.index.get_loc(date) - eq.index.get_loc(start)),
+                    "持续(交易日)": int(eq.index.get_loc(day) - eq.index.get_loc(start)),
                 }
             )
             in_dd = False
@@ -3640,6 +3657,337 @@ def render_raw(res) -> None:
 
 
 # ================================================================= 主流程
+# ================================================================= 事件与风险
+# 这一页的设计目标与别的页签不同：**先用一屏把结论说清楚，细节全部折叠**。
+# 因为「加新闻/事件让预测更准」是最容易走偏的诉求，页面的首要任务是先把
+# 实测结论摆在最上面，再给证据，最后才给原始数据。
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_news(limit: int) -> pd.DataFrame:
+    return ev.fetch_news(limit=limit)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_econ_calendar(day: str) -> pd.DataFrame:
+    return ev.fetch_econ_calendar(day)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_placebo(nav: pd.DataFrame, mode: str) -> dict:
+    """安慰剂检验：把事件日随机化后重算，看真实值是否只是日历巧合。
+
+    ``nav`` 直接参与缓存键，因此换基金、换区间会自动失效重算。
+    """
+    if nav is None or nav.empty:
+        return {}
+    n = nav.copy()
+    n["date"] = pd.to_datetime(n["date"])
+    first, last = n["date"].iloc[0].date(), n["date"].iloc[-1].date()
+    cal = ev.scheduled_events(first, last, trade_dates=n["date"])
+    return ev.placebo_test(
+        n,
+        cal,
+        before=0,
+        after=1,
+        horizon=1,
+        min_importance=3,
+        n_draws=200,
+        max_shift=20,
+        mode=mode,
+    )
+
+
+def _importance_badge(level: int) -> str:
+    label = {3: "高", 2: "中", 1: "低"}.get(int(level), "-")
+    cls = {3: "hot", 2: "on", 1: ""}.get(int(level), "")
+    return f'<span class="fs-badge {cls}">{label}</span>'
+
+
+def render_events(res) -> None:
+    nav = res.nav
+    if nav is None or nav.empty:
+        st.info("没有净值数据，无法做事件对齐分析。")
+        return
+
+    nav = nav.copy()
+    nav["date"] = pd.to_datetime(nav["date"])
+    first, last = nav["date"].iloc[0].date(), nav["date"].iloc[-1].date()
+
+    cal = ev.scheduled_events(first, last, trade_dates=nav["date"])
+    imp = ev.event_impact(nav, cal, before=0, after=1, horizon=1, min_importance=3)
+
+    # 安慰剂检验提前算——最终判断必须由它裁决（见 events.verdict_text）
+    try:
+        pl_shift = _cached_placebo(nav, "shift")
+        pl_uni = _cached_placebo(nav, "uniform")
+    except Exception as err:  # noqa: BLE001
+        pl_shift, pl_uni = {}, {}
+        st.caption(f"安慰剂检验失败：{err}")
+    pl_best = pl_uni or pl_shift
+
+    # ---------------------------------------------------------- 结论先行
+    section("一句话结论", "先看这里，下面的细节都是它的证据")
+    note(f"<b>{ev.verdict_text(imp, pl_best)}</b>", "warn")
+
+    merged = imp[imp["事件"].str.startswith("★")] if not imp.empty else pd.DataFrame()
+    cover = float(merged["覆盖率"].iloc[0]) if not merged.empty else float("nan")
+    vol_ratio = float(merged["波动比"].iloc[0]) if not merged.empty else float("nan")
+    win_diff = float(merged["胜率差"].iloc[0]) if not merged.empty else float("nan")
+    vol_pct = float(pl_best.get("p_波动", float("nan")))
+
+    up = ev.upcoming_events(days=14, min_importance=2, trade_dates=nav["date"])
+    kpi_row(
+        [
+            dict(label="未来 14 天重要事件", value=fint(len(up)), sub="重要性 ≥ 中", tone="flat"),
+            dict(
+                label="事件窗口覆盖率",
+                value=fpct(cover),
+                sub="超过 50% 则对照失效",
+                tone="flat",
+                help_text="高重要性事件日及其次一交易日占全部交易日的比例",
+            ),
+            dict(
+                label="事件窗口波动比",
+                value=f"{vol_ratio:.2f}×",
+                sub=f"随机化后分位 {vol_pct * 100:.0f}%（≈50% 即无区别）",
+                tone="flat",
+                help_text="与非事件期相比。< 1 表示波动更小，但要看安慰剂分位："
+                "若随机日期也能得到同样读数，它就不是事件效应",
+            ),
+            dict(
+                label="事件方向胜率差",
+                value=f"{win_diff * 100:+.1f}pp",
+                sub="≈0 说明方向无差别",
+                tone=tone_of(win_diff),
+            ),
+        ]
+    )
+
+    # ---------------------------------------------------------- 未来有什么大事
+    section("接下来有什么大事", "这些日期是**算出来的**，不依赖任何新闻源，所以可以提前知道")
+    span = st.radio(
+        "查看范围",
+        [7, 14, 30],
+        index=1,
+        horizontal=True,
+        format_func=lambda d: f"未来 {d} 天",
+        key="fs_ev_span",
+    )
+    ups = ev.upcoming_events(days=span, min_importance=2, trade_dates=nav["date"])
+    if ups.empty:
+        st.caption("这个区间内没有重要性 ≥ 中的日程事件。")
+    else:
+        body = (
+            "<table class='fs-tbl'><thead><tr><th>日期</th><th>事件</th><th>类别</th>"
+            "<th>重要性</th><th>说明</th></tr></thead><tbody>"
+        )
+        for _, r in ups.iterrows():
+            body += (
+                f"<tr><td>{r['date'].strftime('%m-%d')} "
+                f"<span style='opacity:.6'>{r['date'].strftime('%a')}</span></td>"
+                f"<td><b>{r['name']}</b></td><td>{r['category']}</td>"
+                f"<td>{_importance_badge(r['importance'])}</td>"
+                f"<td style='opacity:.75'>{r['note']}</td></tr>"
+            )
+        st.markdown(_flat(body + "</tbody></table>"), unsafe_allow_html=True)
+    note(
+        "「日历事件」是<b>唯一可以合法进入模型</b>的一类事件——它的时间点事先已知，"
+        "不依赖任何未来信息。而<b>当天看到的新闻不能进模型</b>：新闻的「重要性」"
+        "只有事后才看得清，用当天快讯挑事件再回看收益，属于事后诸葛。<br>"
+        "但「可以合法使用」不等于「有用」——它到底有没有用，由下面的实测与安慰剂检验裁决。",
+        "info",
+    )
+
+    # ---------------------------------------------------------- 实时事件（折叠）
+    with st.expander("📰 当下正在发生什么（实时快讯 / 经济日历，需联网）", expanded=False):
+        left, right = st.columns(2, gap="medium")
+        with left:
+            st.markdown("**市场快讯**")
+            try:
+                news = _cached_news(25)
+            except Exception as err:  # noqa: BLE001
+                news = pd.DataFrame()
+                st.caption(f"获取失败：{err}")
+            if news.empty:
+                st.caption("无数据（可能断网或数据源波动）。")
+            else:
+                for _, r in news.head(12).iterrows():
+                    st.markdown(
+                        _flat(
+                            f"<div style='padding:6px 0;border-bottom:1px solid rgba(128,128,128,.18)'>"
+                            f"<span style='opacity:.55;font-size:.78rem'>{r['time'][-8:]} · "
+                            f"{r['source']}</span><br>{r['title']}</div>"
+                        ),
+                        unsafe_allow_html=True,
+                    )
+        with right:
+            st.markdown("**经济日历（含市场预期值）**")
+            try:
+                ec = _cached_econ_calendar(date.today().strftime("%Y-%m-%d"))
+            except Exception as err:  # noqa: BLE001
+                ec = pd.DataFrame()
+                st.caption(f"获取失败：{err}")
+            if ec.empty:
+                st.caption("当日无数据。")
+            else:
+                keep = ec[ec["重要性"] >= 2].head(14)
+                if keep.empty:
+                    st.caption("当日没有高重要性数据。")
+                else:
+                    st.dataframe(
+                        keep[["时间", "地区", "事件", "公布", "预期", "前值"]],
+                        width="stretch",
+                        hide_index=True,
+                    )
+        note(
+            "这两块是**解释与预警**用的——知道「今天为什么跌」和「明天有什么要公布」，"
+            "但它不参与模型计算。原因见上面那条。",
+            "info",
+        )
+
+    # ---------------------------------------------------------- 实测证据（折叠）
+    with st.expander("📊 事件到底有没有用？看实测证据", expanded=False):
+        if imp.empty:
+            st.caption("样本不足，无法检验。")
+        else:
+            st.markdown(
+                "把每个事件日及其**次一交易日**（即真正可成交的那一天）与非事件期对比。"
+                "最重要的一列是**波动比**——它衡量风险，而不是方向。"
+            )
+            show = imp.copy()
+            show["时间精度"] = (
+                show["精度"].map({"exact": "发布日固定", "approx": "窗口（±2 天浮动）"}).fillna("—")
+            )
+            st.dataframe(
+                show[
+                    [
+                        "事件",
+                        "重要性",
+                        "时间精度",
+                        "样本数",
+                        "覆盖率",
+                        "窗口上涨概率",
+                        "非事件期上涨概率",
+                        "胜率差",
+                        "窗口日波动",
+                        "非事件期日波动",
+                        "波动比",
+                    ]
+                ],
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "重要性": st.column_config.NumberColumn(format="%d"),
+                    "覆盖率": st.column_config.NumberColumn(format="percent"),
+                    "窗口上涨概率": st.column_config.NumberColumn(format="percent"),
+                    "非事件期上涨概率": st.column_config.NumberColumn(format="percent"),
+                    "胜率差": st.column_config.NumberColumn(format="percent"),
+                    "窗口日波动": st.column_config.NumberColumn(format="%.4f"),
+                    "非事件期日波动": st.column_config.NumberColumn(format="%.4f"),
+                    "波动比": st.column_config.NumberColumn(format="%.2f"),
+                },
+            )
+
+            # 把「看着像发现、其实是陷阱」的东西主动点出来
+            traps = imp[
+                (~imp["事件"].str.startswith("★"))
+                & (imp["胜率差"].abs() >= 0.05)
+                & (imp["样本数"] <= 200)
+            ]
+            if not traps.empty:
+                names = "、".join(
+                    f"{r['事件']}（{int(r['样本数'])} 天）" for _, r in traps.iterrows()
+                )
+                note(
+                    f"⚠️ <b>警惕这几行</b>：{names} 的方向差异看着很大，但它们的日期在"
+                    "日历上是固定的（政治局会议在 4/7/10/12 月、两会在 3 月、中央经济工作会议在 12 月），"
+                    "所以**捕捉到的很可能是「季节性」，而不是「事件效应」**；样本只有几十天，"
+                    "在十几个类别里挑出最极端的那个，本身就是多重比较下的过拟合。"
+                    "这一类结论<b>不能当成信号使用</b>。",
+                    "bad",
+                )
+            note(
+                "纵向比较要非常小心：不同事件的窗口会重叠，而且「事件日」不是随机分配的。"
+                "本表只适合读**波动比**这一个方向，不要拿它去构造交易规则。",
+                "info",
+            )
+
+            # -------------------------------------------------- 安慰剂检验
+            st.markdown("**安慰剂检验：把事件日随机化，还看得出来吗？**")
+            st.markdown(
+                "上面的「波动比 < 1」看着像一个发现。但事件日**不是随机分配的**——"
+                "LPR 固定在每月 20 日、两会在 3 月、中央经济工作会议在 12 月。"
+                "所以要把事件日随机化后重算一遍：如果随机日期也能得到同样的结果，"
+                "那所谓「事件效应」就只是**日历位置**带来的假象。"
+            )
+            if pl_shift and pl_uni:
+                prows = [
+                    {
+                        "随机化方式": "平移 ±20 个交易日（保留月内位置）",
+                        "随机波动比中位数": pl_shift["随机波动比中位数"],
+                        "5%~95% 区间": f"{pl_shift['随机波动比 P5']:.2f} ~ "
+                        f"{pl_shift['随机波动比 P95']:.2f}",
+                        "真实值": pl_shift["真实波动比"],
+                        "真实值分位": pl_shift["p_波动"],
+                    },
+                    {
+                        "随机化方式": "样本区间内均匀随机取日期（打破日历结构）",
+                        "随机波动比中位数": pl_uni["随机波动比中位数"],
+                        "5%~95% 区间": f"{pl_uni['随机波动比 P5']:.2f} ~ "
+                        f"{pl_uni['随机波动比 P95']:.2f}",
+                        "真实值": pl_uni["真实波动比"],
+                        "真实值分位": pl_uni["p_波动"],
+                    },
+                ]
+                st.dataframe(
+                    pd.DataFrame(prows),
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "随机波动比中位数": st.column_config.NumberColumn(format="%.3f"),
+                        "真实值": st.column_config.NumberColumn(format="%.3f"),
+                        "真实值分位": st.column_config.NumberColumn(format="percent"),
+                    },
+                )
+                in_middle = 0.05 < float(pl_uni["p_波动"]) < 0.95
+                note(
+                    ev.placebo_summary_text(pl_uni)
+                    if in_middle
+                    else ev.placebo_summary_text(pl_shift),
+                    "bad" if in_middle else "warn",
+                )
+                note(
+                    "注意这两种随机化的**随机波动比中位数本身也小于 1**——"
+                    "说明「事件窗口波动比 < 1」这个读数里，本来就含有一部分来自"
+                    "「少数日 vs 多数日」这种切分方式的偏差。真实值落在随机分布的"
+                    "中部，因此它<b>不能</b>作为「事件改变了风险」的证据。",
+                    "info",
+                )
+
+    # ---------------------------------------------------------- 怎么用
+    section("所以，事件该怎么用", "这是本页唯一想让你记住的三件事")
+    c1, c2, c3 = st.columns(3, gap="medium")
+    with c1:
+        note(
+            "<b>❌ 不要用来猜涨跌</b><br>实测三只基金的事件窗口方向差异全落在噪声里，"
+            "而「拿当天新闻挑事件再回看收益」最容易靠未来函数刷出漂亮回测。",
+            "bad",
+        )
+    with c2:
+        note(
+            "<b>❌ 也别指望它「降波动」</b><br>本页读到的「事件窗口波动比 &lt; 1」"
+            "经不起安慰剂检验：把事件日随机化后，随机日期也能得到同样的读数。"
+            "所以它不是事件效应，不能当成「事件期更安全」的理由。",
+            "bad",
+        )
+    with c3:
+        note(
+            "<b>✅ 真正有用的是「日程可提前推算」</b><br>知道哪几天有数据公布、"
+            "哪几天有会议，用来安排<b>什么时候下手</b>（避开数据公布前一次性重仓），"
+            "以及事后解释「今天为什么动」。它提供的是信息，不是预测。",
+            "ok",
+        )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="fund-signal · 基金量化信号工作台",
@@ -3687,6 +4035,7 @@ def main() -> None:
         [
             "📊 总览",
             "🎯 信号详情",
+            "📅 事件与风险",
             "🧪 模型评估",
             "💰 回测",
             "🧭 风控与仓位",
@@ -3700,16 +4049,18 @@ def main() -> None:
     with tabs[1]:
         render_prediction(result)
     with tabs[2]:
-        render_model(result)
+        render_events(result)
     with tabs[3]:
-        render_backtest(result)
+        render_model(result)
     with tabs[4]:
-        render_risk(result)
+        render_backtest(result)
     with tabs[5]:
-        render_audit(result)
+        render_risk(result)
     with tabs[6]:
-        render_data(result)
+        render_audit(result)
     with tabs[7]:
+        render_data(result)
+    with tabs[8]:
         render_raw(result)
 
     st.divider()
