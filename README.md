@@ -8,7 +8,8 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-81%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-123%20passed-brightgreen.svg)](tests/)
+[![Theme](https://img.shields.io/badge/theme-light%20%2F%20dark-7c5cff.svg)](#-界面预览)
 [![CI](https://github.com/wang-1168/fund-signal/actions/workflows/ci.yml/badge.svg)](https://github.com/wang-1168/fund-signal/actions)
 [![Code style](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -20,6 +21,12 @@
 <img src="docs/screenshots/01-overview.webp" alt="fund-signal 总览页" width="100%">
 
 <sub>↑ 总览页：数据新鲜度、最新信号、9 条判据诊断 —— 所有数字都是样本外结果，没有一个是训练集里算出来的</sub>
+
+<br><br>
+
+<img src="docs/screenshots/10-dark.webp" alt="fund-signal 暗色主题" width="100%">
+
+<sub>↑ 同一页面的<b>暗色主题</b>：右下角悬浮按钮或侧边栏一键切换，切换瞬间有圆形擦除过渡 + 粒子配色渐变 + 冲击波（可在系统「减少动态效果」下自动关闭）</sub>
 
 </div>
 
@@ -134,9 +141,10 @@ AUC = Φ(m/√2)  →  最优判定准确率 = Φ( Φ⁻¹(AUC) / √2 )
 | 📅 **事件与风险** | 把「重大事件」拆成**能进模型**与**只能看**的两层；日历事件可推算到未来（提前知道有什么大事）；用实测数据回答「事件到底能不能提高准确率」——**答案是不能，它改变的是风险与节奏** |
 | 🔄 **实时数据能力** | 自动补齐最新交易日净值（含"当日净值未公布时回退到上一交易日"的处理）+ 盘中实时估值 |
 | 🖥️ **交互式界面** | 9 个标签页、35 张可交互图表；**canvas 粒子背景** + 玻璃拟态卡片；阈值/成本/延迟滑块**实时重算回测**，无需重新训练 |
+| 🌗 **亮色 / 暗色主题** | 右下角悬浮按钮或侧边栏一键切换，**切换瞬间**有圆形擦除过渡 + 粒子配色渐变 + 冲击波；支持「亮色 / 暗色 / 跟随系统」三态；图表、原生控件、数据表格全部同步换肤；尊重 `prefers-reduced-motion` |
 | 🎛️ **可调的严谨性开关** | 样本外概率校准、净化间隔（防标签重叠泄漏）、四模型集成，都可在侧边栏一键开关并对比 |
 | 📦 **零配置可用** | 数据源 akshare 免费无需 token；仓库自带离线样例数据，**断网也能跑通全流程** |
-| ✅ **114 个单元测试** | 全部离线运行，CI 秒级完成 |
+| ✅ **123 个单元测试** | 全部离线运行，CI 秒级完成 |
 
 ---
 
@@ -206,7 +214,7 @@ print("模型是否真有优势：", result.has_edge)
 
 ## 🖥️ 界面预览
 
-界面分 9 个标签页、35 张可交互图表，全部可缩放、可悬停查看数值；带 canvas 粒子背景与玻璃拟态卡片。
+界面分 9 个标签页、35 张可交互图表，全部可缩放、可悬停查看数值；带 canvas 粒子背景与玻璃拟态卡片。**支持亮色 / 暗色双主题**，右下角圆形按钮或侧边栏一键切换（也可跟随系统）。
 
 <table>
 <tr>
@@ -236,7 +244,8 @@ print("模型是否真有优势：", result.has_edge)
 <tr>
 <td width="50%"><img src="docs/screenshots/09-export.webp" alt="📋 数据与导出"><br>
 <b>📋 数据与导出</b> —— 完整数据集 / 样本外预测 / 各折指标一键导出 CSV / 参数快照 / 方法论速览</td>
-<td width="50%"></td>
+<td width="50%"><img src="docs/screenshots/10-dark.webp" alt="🌗 暗色主题"><br>
+<b>🌗 暗色主题</b> —— 同一页面的暗色皮肤：粒子背景、玻璃卡片、图表格与原生控件（下拉框 / 输入框 / 药丸按钮 / 数据表格）全部同步换肤</td>
 </tr>
 </table>
 
@@ -261,7 +270,9 @@ print("模型是否真有优势：", result.has_edge)
 
 > **性能提示**：「精度审计」页首次打开会跑一遍复杂度扫描（5 档复杂度 × 5 折滚动前向，约 20~30 秒），结果缓存 6 小时。不想等可以关掉这个标签页直接看别的。
 
-> **截图说明**：以上截图取自 `000001 华夏成长混合` 的默认参数运行结果（离线样例数据，可完全复现）。
+> **主题怎么切**：右下角圆形按钮（🌙 / ☀️），或侧边栏「⑤ 外观」里的单选组（亮色 / 暗色 / 跟随系统）。切换瞬间页面做**圆形擦除**过渡、粒子背景**渐变**到新配色并荡出一圈冲击波；选「跟随系统」时跟随操作系统深浅色。若系统开启了「减少动态效果」，所有动画自动关闭。
+>
+> **截图说明**：以上截图取自 `000001 华夏成长混合` 的默认参数运行结果（离线样例数据，可完全复现）；`10-dark.webp` 为暗色主题下的同一批页面。
 
 ---
 
@@ -366,7 +377,7 @@ print(ev.verdict_text(imp, plc))  # 最终判断
 
 ```
 fund-signal/
-├── app.py                      # Streamlit 交互界面（9 页签 + 粒子背景）
+├── app.py                      # Streamlit 交互界面（9 页签 + 粒子背景 + 亮暗主题）
 ├── fund_signal/
 │   ├── config.py               # 参数中心
 │   ├── data.py                 # 数据获取（含实时净值/盘中估值）+ 缓存
@@ -384,7 +395,7 @@ fund-signal/
 ├── scripts/
 │   ├── build_sample_data.py    # 重新生成离线样例数据
 │   └── verify_claims.py        # 复现并校验本文档引用的全部实测数字
-├── tests/                      # 114 个单元测试（全部离线）
+├── tests/                      # 123 个单元测试（全部离线）
 ├── docs/
 │   ├── methodology.md          # 方法论详解
 │   └── screenshots/            # 界面截图（README 预览用）
@@ -444,6 +455,18 @@ fund-signal/
 <summary><b>盘中估值接口为什么对某些基金没数据？</b></summary>
 
 `fund_value_estimation_em` 只覆盖约 687 只基金（数据源按持仓可拟合度筛选），且仅在交易时段有值。取不到时返回 `None`，界面显示为 `—`。这是数据源覆盖范围决定的，不是 bug。
+</details>
+
+<details>
+<summary><b>暗色主题下有哪个地方没跟着变？</b></summary>
+
+三处如实说明：
+
+1. **数据表格（glide data grid）是 canvas 绘制的**，它的配色在页面启动时就固化了，运行时改 CSS 变量不会让它重绘。本项目对暗色主题下的表格画布施加 `invert(0.94) hue-rotate(180deg) saturate(0.9)` 滤镜来换肤——效果等价，但**你自己接的新表格如果用了非标准底色，色相会被一起旋转**。
+2. **`.streamlit/config.toml` 里固定了 `base = "light"`**。这是刻意的：原生控件的启动主题 token 只能在启动时读取，所以项目改为用 CSS 覆盖（含 `!important`）+ 表格滤镜来处理暗色，而不是依赖 Streamlit 内置的 `dark` 主题。好处是切换**不需要重跑应用**，代价是覆盖清单比较长。
+3. **Plotly 图表**跟随主题走，但它们用了透明背景（`paper_bgcolor="rgba(0,0,0,0)"`），所以看到的是页面背景色。若你把主题图例/网格线颜色硬编码进自己的图，需要改用 `style_fig`。
+
+以上都有测试锁住：`tests/test_theme.py` 共 9 项，覆盖默认主题、切换时擦除层与调色板同轮注入、未切换时不出擦除层、动画名交替、粒子补间状态同轮消费、未知取值回落亮色、侧边栏与悬浮按钮双向同步、跟随系统。
 </details>
 
 <details>

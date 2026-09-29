@@ -90,6 +90,8 @@ LIGHT: dict[str, str] = {
     "p_glow1": "rgba(201,134,26,0.10)",  # 光斑一
     "p_glow2": "rgba(62,124,177,0.10)",  # 光斑二
     "p_bg": "#FBFCFE",
+    # 数据网格（canvas）在暗色下用的反色滤镜，亮色下不生效。见 _CSS 里的长注释。
+    "grid_filter": "none",
 }
 
 DARK: dict[str, str] = {
@@ -120,16 +122,168 @@ DARK: dict[str, str] = {
     "p_glow1": "rgba(240,179,76,0.10)",
     "p_glow2": "rgba(111,160,204,0.12)",
     "p_bg": "#0D1117",
+    # canvas 网格反色：白底→近黑、深字→浅字，hue-rotate(180deg) 把强调色转回来。
+    "grid_filter": "invert(0.94) hue-rotate(180deg) saturate(0.9)",
 }
 
 
 def theme() -> dict[str, str]:
     """当前 Streamlit 主题对应的色板。"""
+    return _palette_for(theme_pref())
+
+
+# ================================================================= 主题切换
+# 决策记录（为什么这么写）
+# ------------------------
+# ① **不写 `.streamlit/config.toml` 的 `theme.base`**。那是启动期配置，改了必须重启进程，
+#    谈不上「灵活」。所以色板完全由 app.py 自己持有（LIGHT / DARK），运行时按偏好挑。
+#    config.toml 里的 `base = "light"` 只决定 Streamlit 原生控件的底色（下拉框、滑块…），
+#    我们的 CSS 变量负责其余全部视觉。
+# ② 偏好的**真相源**是普通 session_state 键 `fs_theme`，不是某个控件的键。
+#    这样侧边栏三项选择与右上角浮动按钮可以写同一个真相源，再各自反向同步控件状态
+#    （控件状态用 `st.session_state[键] = 值` 在**实例化之前**写回，否则 Streamlit 会报错）。
+# ③ 切换动画分三层，少一层就「不够动感」：
+#    - 覆盖层 `.fs-wipe` 用**旧底色**从触发点收缩成一个小圆 —— 新主题从洞里露出来；
+#    - 强调色圆环 `.fs-wipe-ring` 从同一点炸开，给一个「有东西发生了」的明确信号；
+#    - 粒子画布把自己的颜色从旧色板**补间**到新色板，同时给粒子一个远离点击点的
+#      速度脉冲 + 一圈冲击波，然后阻尼回落到基准速度。
+# ④ 覆盖层还顺手解决了两个**没法补间**的东西：CSS 渐变（hero 的 linear-gradient 不会
+#    随变量动画）和 Plotly 图表（canvas 重绘）。趁被盖住的时候硬切掉，观众看不见。
+# ⑤ `sync_theme()` 必须在 `inject_css()` **之前**调用：覆盖层要跟着这一轮的 CSS 一起
+#    注入，晚一步就得等下一次 rerun，动画看起来就像卡了一帧。
+# ⑥ 覆盖层的三个动画都准备了 A / B 两份一模一样的关键帧，按切换次数奇偶交替使用。
+#    原因是 React 会**复用**这个 DOM 节点（结构没变就只改属性），而改属性不会重放
+#    CSS 动画 —— 实测第 2 次之后的切换完全看不到擦除效果。详见 _CSS 里的长注释。
+THEME_CHOICES: dict[str, str] = {
+    "light": "☀️ 亮色",
+    "dark": "🌙 暗色",
+    "auto": "🖥️ 跟随系统",
+}
+
+_THEME_KEY = "fs_theme"  # 真相源：当前偏好
+_THEME_APPLIED_KEY = "fs_theme_applied"  # 上一轮真正渲染用的偏好（判断「刚切过」）
+_THEME_PREV_KEY = "fs_theme_prev"  # 上一轮的色板（粒子画布的补间起点）
+_THEME_ORIGIN_KEY = "fs_theme_origin"  # 这次从哪个控件触发（决定擦除圆心）
+_THEME_SHOCK_KEY = "fs_theme_shock"  # 归一化圆心，给画布里那圈冲击波用
+_THEME_SEQ_KEY = "fs_theme_seq"  # 切换次数奇偶，用来交替 animation-name 强制重播动画
+_THEME_RADIO_KEY = "fs_theme_radio"
+_THEME_QUICK_KEY = "fs_theme_quick"
+
+# 擦除圆心：(CSS 横向值, CSS 纵向值, 视口横向比例, 视口纵向比例)。
+# 后两个给画布里的冲击波用 —— 画布能拿到真实视口，这里给个近似比例即可，
+# 冲击波只是氛围，不追求像素级对齐。
+_WIPE_ORIGINS: dict[str, tuple[str, str, float, float]] = {
+    "quick": ("calc(100% - 46px)", "calc(100% - 30px)", 0.971, 0.966),  # 右下角浮动按钮
+    "sidebar": ("150px", "44vh", 0.094, 0.44),  # 侧边栏
+}
+
+
+def _palette_for(pref: str) -> dict[str, str]:
+    """偏好 -> 色板。只有 ``auto`` 需要问 Streamlit。"""
+    if pref == "dark":
+        return DARK
+    if pref == "light":
+        return LIGHT
     try:
-        dark = (st.get_option("theme.base") or "light").lower() == "dark"
+        base = (st.get_option("theme.base") or "light").lower()
     except Exception:  # 单元测试 / AppTest 环境下可能取不到选项
-        dark = False
-    return DARK if dark else LIGHT
+        base = "light"
+    return DARK if base == "dark" else LIGHT
+
+
+def theme_pref() -> str:
+    """当前偏好：``light`` / ``dark`` / ``auto``。
+
+    优先级：session_state（用户点过）> URL 参数 ``?theme=dark``（便于分享固定外观的链接）
+    > 默认 ``light``。刻意**不写回** URL 参数 —— `st.query_params` 赋值在部分版本会触发
+    额外 rerun，为一个「锦上添花」的功能冒这个险不值。
+    """
+    try:
+        pref = st.session_state.get(_THEME_KEY)
+    except Exception:
+        pref = None
+    if pref in THEME_CHOICES:
+        return pref
+    try:
+        q = st.query_params.get("theme")
+    except Exception:
+        q = None
+    return q if q in THEME_CHOICES else "light"
+
+
+def sync_theme() -> tuple[str, str, float, float] | None:
+    """判断主题是否**刚被切换**，是则返回擦除圆心；否则返回 None。
+
+    必须在 `inject_css()` 之前调用（见上面决策记录 ⑤）。
+    """
+    pref = theme_pref()
+    applied = st.session_state.get(_THEME_APPLIED_KEY)
+    st.session_state[_THEME_APPLIED_KEY] = pref
+    if applied is None or applied == pref:
+        return None
+    # 记下旧色板，给粒子画布当补间起点
+    st.session_state[_THEME_PREV_KEY] = _palette_for(applied)
+    origin = _WIPE_ORIGINS.get(
+        st.session_state.pop(_THEME_ORIGIN_KEY, "quick"), _WIPE_ORIGINS["quick"]
+    )
+    # 归一化圆心给画布里的冲击波；画布那层晚一步渲染，先存着
+    st.session_state[_THEME_SHOCK_KEY] = (origin[2], origin[3])
+    # 切换次数 +1，奇偶决定这轮用 A 还是 B 的 animation-name（详见 _CSS 里的说明）
+    st.session_state[_THEME_SEQ_KEY] = int(st.session_state.get(_THEME_SEQ_KEY, 0)) + 1
+    return origin
+
+
+def _on_theme_radio() -> None:
+    """侧边栏三项选择的回调。"""
+    val = st.session_state.get(_THEME_RADIO_KEY)
+    if val in THEME_CHOICES:
+        st.session_state[_THEME_KEY] = val
+        st.session_state[_THEME_ORIGIN_KEY] = "sidebar"
+
+
+def _on_theme_quick() -> None:
+    """右上角浮动按钮的回调：在亮 / 暗之间直接对调。
+
+    从 ``auto`` 出发时，按**当前实际显示**的明暗取反，而不是固定跳到 dark。
+    """
+    cur = _palette_for(theme_pref())
+    st.session_state[_THEME_KEY] = "light" if cur["base"] == "dark" else "dark"
+    st.session_state[_THEME_ORIGIN_KEY] = "quick"
+
+
+def render_theme_quick(container=None) -> None:
+    """浮动的一键切换按钮（靠 CSS 固定在右下角，不占文档流）。
+
+    按钮文案**只有目标模式的图标**：亮色时显示 🌙（点了变暗），暗色时显示 ☀️。
+    文字说明放 ``help``（悬浮提示），这样按钮能被 CSS 压成 46px 的圆形。
+    """
+    c = container if container is not None else st
+    is_dark = _palette_for(theme_pref())["base"] == "dark"
+    c.button(
+        "☀️" if is_dark else "🌙",
+        key=_THEME_QUICK_KEY,
+        on_click=_on_theme_quick,
+        help="切换亮色 / 暗色（带擦除动画，粒子背景会跟着换色）",
+    )
+
+
+def render_theme_sidebar(sb) -> str:
+    """侧边栏外观选择：亮色 / 暗色 / 跟随系统。"""
+    pref = theme_pref()
+    # 浮动按钮改过偏好后，把 radio 拉回同步 —— 必须在实例化**之前**写
+    if st.session_state.get(_THEME_RADIO_KEY) != pref:
+        st.session_state[_THEME_RADIO_KEY] = pref
+    sb.radio(
+        "外观",
+        list(THEME_CHOICES),
+        format_func=lambda k: THEME_CHOICES[k],
+        horizontal=True,
+        key=_THEME_RADIO_KEY,
+        on_change=_on_theme_radio,
+        help="亮色 / 暗色 / 跟随系统。切换带擦除动画，粒子背景会跟着换色。"
+        "「跟随系统」按操作系统 / 浏览器的深浅色偏好走。",
+    )
+    return pref
 
 
 # ================================================================= 样式
@@ -260,6 +414,107 @@ body{background:transparent!important}
   display:block!important;
 }
 
+/* ---------- 给 Streamlit 原生控件换皮 ----------
+   原生控件的颜色来自 .streamlit/config.toml 那套**启动期**配色（base = light），
+   运行时改不了。所以暗色模式下必须把它们逐个拉回我们的 CSS 变量，否则就会出现
+   「深色页面 + 白色下拉框 + 看不见的标签」这种半吊子深色。
+   选择器一律只用 data-testid / role / data-variant / data-selected 这些**稳定钩子**
+   （emotion 的类名是构建期哈希，不能依赖），必要时用 !important 压过 Streamlit 自己
+   那套行为类。亮色下这些变量正好等于 Streamlit 的浅色 token，所以亮色观感不变。 */
+/* 文本 */
+[data-testid="stWidgetLabel"],[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label{color:var(--text)!important}
+[data-testid="stCaptionContainer"] p{color:var(--muted)!important}
+[data-testid="stMarkdownContainer"] p{color:var(--text)}
+[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] h4,[data-testid="stSidebar"] h5,[data-testid="stSidebar"] h6{
+  color:var(--text)!important}
+[data-testid="stTooltipIcon"] button{color:var(--muted)!important}
+[data-testid="stSidebar"] hr{border-color:var(--border)!important}
+/* 输入类控件的「盒子」与文字 */
+[data-testid="stTextInputRootElement"],[data-testid="stNumberInputContainer"],
+[data-testid="stTextAreaRootElement"],[data-testid="stSelectbox"] div[role="group"]{
+  background:var(--card)!important;border-color:var(--border)!important;color:var(--text)!important}
+[data-testid="stTextInputField"],[data-testid="stNumberInputField"],
+[data-testid="stTextArea"] textarea,[data-testid="stSelectbox"] input{
+  color:var(--text)!important;background:transparent!important;caret-color:var(--accent)}
+[data-testid="stNumberInputStepDown"],[data-testid="stNumberInputStepUp"]{
+  color:var(--muted)!important;background:transparent!important}
+/* 药丸 / 分段控件 */
+[data-testid="stButtonGroup"] button[data-variant="pills"],
+[data-testid="stButtonGroup"] button[data-variant="segmented_control"]{
+  background:var(--band)!important;border-color:var(--border)!important;color:var(--text)!important}
+[data-testid="stButtonGroup"] button:hover{background:var(--mid)!important}
+[data-testid="stButtonGroup"] button[aria-checked="true"]{
+  background:var(--glass-hi)!important;border-color:var(--accent)!important}
+[data-testid="stButtonGroup"] button[aria-checked="true"],
+[data-testid="stButtonGroup"] button[aria-checked="true"] p{color:var(--accent)!important}
+/* 单选：外圈 + 内点（选中态由容器的 data-selected 标记） */
+[data-testid="stRadioOption"] > div > div:first-child{background:var(--border)!important}
+[data-testid="stRadioOption"] > div > div:first-child > div{background:var(--band)!important}
+[data-testid="stRadioGroup"] [data-selected] [data-testid="stRadioOption"] > div > div:first-child{
+  background:var(--accent)!important}
+[data-testid="stRadioGroup"] [data-selected]
+  [data-testid="stRadioOption"] > div > div:first-child > div{background:var(--card)!important}
+/* 开关 / 复选框（轨道是 label 下的第一个 div，注意不是 first-child —— 前面还有隐藏的 span） */
+[data-testid="stCheckbox"] > label > div:nth-of-type(1){background:var(--border)!important}
+[data-testid="stCheckbox"] > label > div:nth-of-type(1) > div{background:var(--card)!important}
+[data-testid="stCheckbox"][data-selected] > label > div:nth-of-type(1){
+  background:var(--accent)!important}
+/* 按钮 */
+[data-testid="stBaseButton-secondary"],[data-testid="stDownloadButton"] button{
+  background:var(--card)!important;border-color:var(--border)!important;color:var(--text)!important}
+[data-testid="stBaseButton-secondary"]:hover,[data-testid="stDownloadButton"] button:hover{
+  border-color:var(--accent)!important;color:var(--accent)!important}
+[data-testid="stBaseButton-primary"]{
+  background:var(--accent)!important;border-color:var(--accent)!important}
+[data-testid="stBaseButton-primary"],[data-testid="stBaseButton-primary"] p{
+  color:var(--band)!important}
+/* 滑杆：已填充段 / 滑块用强调色，刻度用弱化色 */
+[data-testid="stSlider"] [role="group"] > div[data-rac] > div[data-rac]{
+  background:var(--accent)!important}
+[data-testid="stSliderTickBar"],[data-testid="stSliderTickBar"] p{color:var(--muted)!important}
+[data-testid="stSliderThumbValue"] p{color:var(--accent)!important}
+/* 展开器标题栏 */
+[data-testid="stExpander"] details > summary{background:transparent!important}
+[data-testid="stExpander"] summary p{color:var(--text)!important}
+[data-testid="stExpander"] summary svg{color:var(--muted)!important}
+/* 下拉浮层（渲染在 portal 里，不在控件子树内） */
+[data-testid="portal"] [role="listbox"],[data-testid="portal"] [role="option"]{
+  background:var(--card)!important;color:var(--text)!important}
+[data-testid="portal"] [role="option"]:hover{background:var(--mid)!important}
+/* 进度条 */
+[data-testid="stProgressBarTrack"]{background:var(--border)!important}
+[data-testid="stProgressBarTrack"] > div{background:var(--accent)!important}
+/* 数据网格（glide）：Streamlit 把配色写成**内联**的 --gdg-* 变量，
+   作者样式里的 !important 能压过内联的非 important 声明，所以这里能改。 */
+[data-testid="stDataFrame"] div{
+  --gdg-accent-color:var(--accent)!important;
+  --gdg-accent-fg:var(--band)!important;
+  --gdg-accent-light:var(--sheen)!important;
+  --gdg-text-dark:var(--text)!important;
+  --gdg-text-medium:var(--muted)!important;
+  --gdg-text-light:var(--border)!important;
+  --gdg-text-group-header:var(--muted)!important;
+  --gdg-bg-cell:var(--card)!important;
+  --gdg-bg-cell-medium:var(--band)!important;
+  --gdg-bg-header:var(--band)!important;
+  --gdg-bg-bubble:var(--card)!important;
+  --gdg-border-color:var(--border)!important;
+  --gdg-link-color:var(--info)!important;
+}
+
+/* 数据网格（glide）的 canvas 反色滤镜
+   ------------------------------------------------------------------
+   Streamlit 的表格是 canvas 画的，配色取自**启动期**主题（config.toml 的 base = light）。
+   试过的三条路都走不通：① 用 CSS 覆盖它内联的 --gdg-* 变量 —— 计算值确实变了，
+   但 canvas 用不上；② 主动触发重绘（改内联变量唤醒 MutationObserver + 抖容器宽度触发
+   ResizeObserver）—— 像素纹丝不动；③ 让它重挂载（给 st.dataframe 换 key）—— 依旧纯白。
+   结论：这张 canvas 的颜色只有暗色滤镜能改。invert 把白底压成近黑、深字提亮，
+   hue-rotate(180deg) 再把这些被反掉的色相转回来（强调色仍然是橙的）。
+   配合上面那组 --gdg-* 覆盖（它管的是网格里的 DOM 部分：工具条、搜索框）。 */
+[data-testid="stDataFrame"] canvas{filter:@grid_filter@}
+
 /* ---------- 表格 / 滚动条 / 控件 ---------- */
 [data-testid="stDataFrame"],[data-testid="stTable"]{border:1px solid var(--border);
   border-radius:11px;overflow:hidden}
@@ -273,6 +528,94 @@ body{background:transparent!important}
 ::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 .js-plotly-plot{border-radius:12px}
 
+/* ---------- 右下角一键切换主题的浮动按钮 ----------
+   用 Streamlit 1.4x 给带 key 的控件容器加的 st-key-<key> 类精确定位；
+   只把这个「元素容器」拽出文档流，其余布局不受影响。 */
+[data-testid="stElementContainer"][class*="st-key-fs_theme_quick"]{
+  position:fixed!important;right:22px!important;bottom:20px!important;
+  width:auto!important;max-width:none!important;z-index:2147482000!important;
+  margin:0!important;padding:0!important}
+[data-testid="stElementContainer"][class*="st-key-fs_theme_quick"] button{
+  width:48px;height:48px;min-height:48px;padding:0;border-radius:50%;
+  background:var(--glass-hi);border:1px solid var(--border);color:var(--text);
+  backdrop-filter:blur(14px) saturate(1.3);-webkit-backdrop-filter:blur(14px);
+  box-shadow:0 10px 26px rgba(16,26,44,.20);
+  transition:transform .18s cubic-bezier(.2,.7,.3,1),box-shadow .18s ease,
+             border-color .18s ease}
+[data-testid="stElementContainer"][class*="st-key-fs_theme_quick"] button:hover{
+  transform:translateY(-3px) scale(1.06);border-color:var(--accent);
+  box-shadow:0 16px 34px rgba(16,26,44,.26),0 0 0 1px var(--sheen)}
+[data-testid="stElementContainer"][class*="st-key-fs_theme_quick"] button:active{
+  transform:scale(.94)}
+/* Streamlit 把按钮文案包在 <p> 里，字号要给到 <p> 上才生效 */
+[data-testid="stElementContainer"][class*="st-key-fs_theme_quick"] button p{
+  font-size:20px;line-height:1;margin:0}
+
+/* ---------- 主题切换过渡：旧底色从触发点擦除 + 冲击圆环 ----------
+   只在「刚切过」的那一轮由 inject_css(wipe=...) 注入，之后就随 DOM 一起被替换掉，
+   所以不需要清理逻辑。z-index 拉到最大盖住一切（包括 Plotly 的 canvas 重绘和
+   hero 上没法补间的 CSS 渐变）；pointer-events:none 保证不拦截任何点击。
+   圆心由元素上的内联 --fs-x/--fs-y 给出（右下角按钮 / 侧边栏两处）。 */
+.fs-wipe{position:fixed;inset:0;overflow:hidden;pointer-events:none;
+  z-index:2147483000;background:var(--fs-old);
+  clip-path:circle(170% at var(--fs-x) var(--fs-y));
+  animation:fsWipeOut .68s cubic-bezier(.52,.05,.22,1) forwards}
+@keyframes fsWipeOut{
+  from{clip-path:circle(170% at var(--fs-x) var(--fs-y))}
+  to{clip-path:circle(0% at var(--fs-x) var(--fs-y))}
+}
+.fs-ring,.fs-flash{position:absolute;left:var(--fs-x);top:var(--fs-y);
+  border-radius:50%;pointer-events:none}
+/* 圆环用 transform:scale 放大，但边框会跟着一起放大（118 倍 → 236px 厚的色块，
+   实测像一大片糊住的橙色）。所以 box-sizing:border-box 固定外径，同时在关键帧里
+   让 border-width 与 scale 成反比，视觉粗细才稳定在 2.5px 左右。 */
+.fs-ring{box-sizing:border-box;width:100px;height:100px;margin:-50px 0 0 -50px;
+  border:2.5px solid var(--accent);
+  animation:fsRingOut .86s cubic-bezier(.14,.86,.24,1) forwards}
+.fs-ring.d2{animation-delay:.12s;border-color:var(--info)}
+@keyframes fsRingOut{
+  0%{transform:scale(.14);border-width:17.8px;opacity:.85}
+  60%{opacity:.28}
+  100%{transform:scale(14);border-width:.18px;opacity:0}
+}
+.fs-flash{width:42vmax;height:42vmax;margin:-21vmax 0 0 -21vmax;
+  background:radial-gradient(circle,var(--sheen) 0%,transparent 58%);
+  animation:fsFlashOut .7s ease-out forwards}
+@keyframes fsFlashOut{
+  0%{transform:scale(.16);opacity:.8}
+  100%{transform:scale(1.9);opacity:0}
+}
+
+/* 为什么每个动画都有 A / B 两份一模一样的关键帧（踩过的坑，别删）
+   -------------------------------------------------------------
+   Streamlit 把 ``unsafe_allow_html`` 的裸 HTML 交给 rehype-raw 渲染成 **React 元素**，
+   于是 React 会做结构 diff：覆盖层的结构每轮都一样，它就**复用同一个 DOM 节点**，
+   只更新 ``style`` 里的 ``--fs-x/--fs-old``。而「改属性」不会重放 CSS 动画 ——
+   实测连续切换时第 2、3 次的 ``clip-path`` 一直停在 0%，也就是根本看不见擦除。
+   （第一次切换能看见，纯粹因为那时 DOM 里还没有这个节点。）
+   解法：每次切换交替 A / B 的 ``animation-name``。规范规定 animation-name 一变就
+   重启动画，所以无论节点是新的还是被复用的，动画都会从头播一遍。 */
+.fs-wipe.alt{animation-name:fsWipeOutB}
+.fs-ring.alt{animation-name:fsRingOutB}
+.fs-flash.alt{animation-name:fsFlashOutB}
+@keyframes fsWipeOutB{
+  from{clip-path:circle(170% at var(--fs-x) var(--fs-y))}
+  to{clip-path:circle(0% at var(--fs-x) var(--fs-y))}
+}
+@keyframes fsRingOutB{
+  0%{transform:scale(.14);border-width:17.8px;opacity:.85}
+  60%{opacity:.28}
+  100%{transform:scale(14);border-width:.18px;opacity:0}
+}
+@keyframes fsFlashOutB{
+  0%{transform:scale(.16);opacity:.8}
+  100%{transform:scale(1.9);opacity:0}
+}
+
+@media (prefers-reduced-motion:reduce){
+  .fs-wipe,.fs-ring,.fs-flash{animation:none;opacity:0}
+}
+
 @keyframes fsRise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
 @keyframes fsGlow{0%,100%{opacity:.55}50%{opacity:1}}
 .fs-pulse{animation:fsGlow 2.6s ease-in-out infinite}
@@ -280,12 +623,38 @@ body{background:transparent!important}
 """
 
 
-def inject_css() -> None:
+def inject_css(wipe: tuple[str, str, float, float] | None = None) -> None:
+    """注入全局样式。
+
+    ``wipe`` 非空表示**本轮刚切过主题**，此时额外注入一层覆盖动画
+    （旧底色从触发点收缩成小圆 + 圆环炸开）。它不是常驻元素：下一轮 rerun 时
+    Streamlit 会用新的 markdown 内容替换掉它，动画自然过期，无需清理。
+    """
     t = theme()
     css = _CSS
     for key, val in t.items():
         css = css.replace(f"@{key}@", val)
     st.markdown(css, unsafe_allow_html=True)
+
+    if wipe is None:
+        return
+    x, y, _, _ = wipe
+    # 覆盖层用的是**旧**底色 —— 新主题已经在这层下面渲染好了
+    prev = st.session_state.get(_THEME_PREV_KEY) or t
+    # 奇偶交替 animation-name（A / B 的关键帧完全一样）—— React 会复用这个节点，
+    # 只改属性不会重放动画，必须靠 animation-name 变化触发重启。见 _CSS 里的注释。
+    alt = " alt" if int(st.session_state.get(_THEME_SEQ_KEY, 1)) % 2 else ""
+    st.markdown(
+        _flat(
+            f'<div class="fs-wipe{alt}" style="--fs-x:{x};--fs-y:{y};'
+            f'--fs-old:{prev["p_bg"]}">'
+            f'<span class="fs-flash{alt}"></span>'
+            f'<span class="fs-ring{alt}"></span>'
+            f'<span class="fs-ring d2{alt}"></span>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 # ================================================================= 粒子背景
@@ -307,7 +676,16 @@ def inject_css() -> None:
 # 配合 ``html`` 上色、``.stApp`` 透明，于是它落在「页面底色之上、所有内容之下」，
 # 且不拦截任何鼠标事件。若 CSS 未生效（极旧浏览器不支持 ``:has()``），
 # 页面只是少一层背景，其余视觉不受影响。
-_PARTICLES_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8">
+#
+# 主题切换动效（怎么做到「跟着变」）
+# --------------------------------
+# 画布颜色是写死在 HTML 里的（srcdoc），父页面的 CSS 变量传不进去。但这件事
+# 反而好办：**srcdoc 变了，浏览器就会重载 iframe**。于是切换那一轮把旧色板
+# 一并塞进 CFG，新文档启动时先用旧色板画第一帧，再用 0.72 秒补间到新色板 ——
+# 表面上是「同一个画布在渐变」，实际上是一段新加载的动画。省掉了跨文档通信。
+# 同一轮还带上归一化圆心，画一圈冲击波并把粒子往外推一下（``sin(e·π)`` 权重，
+# 涨了又落），最后 ``prefers-reduced-motion`` 用户直接看不到这些动效。
+_PARTICLES_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
 html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden;
   background:__BG__}
@@ -316,23 +694,124 @@ canvas{display:block;width:100%;height:100%}
 <script>
 (function(){
   var CFG = __CFG__;
+  // 主题切换动效。CFG.tween > 0 只会出现在「上一轮用的是别的主题」的那一次渲染里
+  // （由 Python 端判断并注入），平时这个分支一个字节都不跑，帧循环开销和以前一样。
+  var REDUCED = !!(window.matchMedia &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  var TWEEN = REDUCED ? 0 : (CFG.tween || 0);
+  var ORIGIN = (CFG.origin && TWEEN > 0) ? CFG.origin : null;
+
   var cv = document.getElementById('fs-canvas');
   var ctx = cv.getContext('2d');
   var DPR = Math.min(window.devicePixelRatio || 1, 2);
-  var VW = 0, VH = 0, parts = [], glows = [], phase = 0;
+  var VW = 0, VH = 0, OX = 0, OY = 0, start = 0;
+  var parts = [], glows = [], phase = 0;
+  var K = TWEEN > 0 ? 0 : 1;   // 动效进度 0→1；到 1 就收尾，后面不再进动画分支
+
+  // ---- 颜色工具：CFG 里底色是 '#RRGGBB'，点 / 线 / 光斑 / 强调色是 'rgba(r,g,b,a)' ----
+  function parseColor(c) {
+    c = String(c || '').trim();
+    if (c.charAt(0) === '#') {
+      var h = c.slice(1);
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      if (h.length < 6) return [0, 0, 0, 1];
+      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16),
+              parseInt(h.slice(4, 6), 16), 1];
+    }
+    var m = c.match(/rgba?\(([^)]+)\)/);
+    if (!m) return [0, 0, 0, 0];
+    var v = m[1].split(',');
+    var al = v.length > 3 ? parseFloat(v[3]) : 1;
+    return [parseFloat(v[0]) || 0, parseFloat(v[1]) || 0, parseFloat(v[2]) || 0,
+            isNaN(al) ? 1 : al];
+  }
+  function rgba(a) {
+    return 'rgba(' + Math.round(a[0]) + ',' + Math.round(a[1]) + ',' +
+           Math.round(a[2]) + ',' + (Math.round(a[3] * 1000) / 1000) + ')';
+  }
+  function alpha(a, al) { return rgba([a[0], a[1], a[2], al]); }
+
+  var KEYS = ['bg', 'dot', 'line', 'glow1', 'glow2', 'acc'];
+  var NEW = {}, OLD = null, COL = {};
+  for (var ii = 0; ii < KEYS.length; ii++) NEW[KEYS[ii]] = parseColor(CFG[KEYS[ii]]);
+  if (TWEEN > 0 && CFG.prev) {
+    OLD = {};
+    for (var jj = 0; jj < KEYS.length; jj++) OLD[KEYS[jj]] = parseColor(CFG.prev[KEYS[jj]]);
+  }
+  // blend(p)：p=0 全用旧色板，p=1 全用新色板。每帧只拼 6 个颜色字符串，开销可忽略。
+  function blend(p) {
+    for (var q = 0; q < KEYS.length; q++) {
+      var key = KEYS[q], nw = NEW[key];
+      if (OLD && p < 1) {
+        var od = OLD[key], w = 1 - p;
+        COL[key] = rgba([nw[0] + (od[0] - nw[0]) * w, nw[1] + (od[1] - nw[1]) * w,
+                         nw[2] + (od[2] - nw[2]) * w, nw[3] + (od[3] - nw[3]) * w]);
+      } else {
+        COL[key] = rgba(nw);
+      }
+    }
+  }
+  blend(TWEEN > 0 ? 0 : 1);
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  // ---- 顺手把父页面里数据网格的配色变量刷新一遍 ----
+  // Streamlit 把表格的 --gdg-* 配色写成**内联样式**（构建期主题）。我们用 CSS 的
+  // !important 覆盖了它（亮暗两套都覆盖得住，计算值实测会跟着变），但 glide 的
+  // DOM 部分（工具条、搜索框、气泡）读的是内联值，canvas 部分干脆不认这些变量
+  // （canvas 的暗色只能靠 _CSS 里的反色滤镜，见那边的注释）。
+  // 这里把「当前计算值」再写回内联样式，让 DOM 部分也跟上；同源 iframe 才能访问
+  // 父文档，失败就静默跳过。
+  function nudgeParentGrids() {
+    var doc;
+    try { doc = window.parent && window.parent.document; } catch (e) { return; }
+    if (!doc || !doc.querySelectorAll) return;
+    var VARS = ['--gdg-bg-cell', '--gdg-bg-cell-medium', '--gdg-bg-header',
+                '--gdg-bg-bubble', '--gdg-text-dark', '--gdg-text-medium',
+                '--gdg-text-light', '--gdg-text-group-header', '--gdg-border-color',
+                '--gdg-accent-color', '--gdg-accent-light', '--gdg-link-color'];
+    try {
+      var all = doc.querySelectorAll('[data-testid="stDataFrame"] div');
+      for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if ((el.getAttribute('style') || '').indexOf('--gdg') < 0) continue;
+        var cs = getComputedStyle(el);
+        for (var v = 0; v < VARS.length; v++) {
+          var val = cs.getPropertyValue(VARS[v]).trim();
+          if (val) el.style.setProperty(VARS[v], val);
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+  if (TWEEN > 0) {
+    setTimeout(nudgeParentGrids, 160);
+    setTimeout(nudgeParentGrids, 1100);
+  }
 
   function resize() {
     VW = window.innerWidth; VH = window.innerHeight;
     cv.width = Math.round(VW * DPR); cv.height = Math.round(VH * DPR);
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    OX = ORIGIN ? ORIGIN[0] * VW : VW * .5;
+    OY = ORIGIN ? ORIGIN[1] * VH : VH * .5;
 
     var n = Math.round(VW * VH / 24000 * (CFG.density || 1));
     n = Math.max(28, Math.min(96, n));
     parts = [];
     for (var i = 0; i < n; i++) {
+      var px = Math.random() * VW, py = Math.random() * VH;
+      // 速度脉冲的方向与强度：沿半径朝外，离爆心越近踢得越狠。
+      // 真踢出去的是 loop 里那个随进度衰减的权重 w，这里只预存方向和幅度。
+      var ix = 0, iy = 0;
+      if (ORIGIN) {
+        var dx = px - OX, dy = py - OY;
+        var d = Math.sqrt(dx * dx + dy * dy) || 1;
+        var amp = 2.6 / (1 + d / 300);
+        ix = dx / d * amp; iy = dy / d * amp;
+      }
       parts.push({
-        x: Math.random() * VW, y: Math.random() * VH,
+        x: px, y: py,
         vx: (Math.random() - .5) * .26, vy: (Math.random() - .5) * .26,
+        ix: ix, iy: iy,
         r: Math.random() * 1.5 + .55
       });
     }
@@ -346,11 +825,22 @@ canvas{display:block;width:100%;height:100%}
 
   var LINK = CFG.link || 140;
 
-  function loop() {
+  function loop(now) {
     phase += .0032;
 
+    // ---- 主题切换动效：K 是原始进度，e 是缓动后的进度，w 是先涨后落的脉冲权重 ----
+    var w = 0;
+    if (K < 1) {
+      if (!start) start = now || 0;
+      K = Math.min(1, ((now || 0) - start) / (TWEEN * 1000));
+      var e = easeOutCubic(K);
+      blend(e);
+      w = Math.sin(e * Math.PI);
+      if (K >= 1) { blend(1); w = 0; }
+    }
+
     ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = CFG.bg;
+    ctx.fillStyle = COL.bg;
     ctx.fillRect(0, 0, VW, VH);
 
     // --- 光斑：缓慢漂移的低透明度径向渐变，营造呼吸感 ---
@@ -358,26 +848,42 @@ canvas{display:block;width:100%;height:100%}
     for (var g = 0; g < glows.length; g++) {
       var gx = glows[g][0] + Math.sin(phase + g * 2.1) * 44;
       var gy = glows[g][1] + Math.cos(phase * .8 + g * 1.7) * 36;
-      var rad = glows[g][2];
+      var rad = glows[g][2] * (1 + .2 * w);
       var grd = ctx.createRadialGradient(gx, gy, 0, gx, gy, rad);
-      grd.addColorStop(0, g === 1 ? CFG.glow2 : CFG.glow1);
+      grd.addColorStop(0, g === 1 ? COL.glow2 : COL.glow1);
       grd.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = grd;
       ctx.beginPath(); ctx.arc(gx, gy, rad, 0, 6.2832); ctx.fill();
     }
+
+    // --- 冲击波：从爆心推出去的细环 + 内侧余晖 ---
+    if (K < 1) {
+      var ew = easeOutCubic(K);
+      var R0 = ew * Math.max(VW, VH) * .8;
+      ctx.beginPath();
+      ctx.lineWidth = 2 + 13 * (1 - ew);
+      ctx.strokeStyle = alpha(NEW.acc, .34 * (1 - ew));
+      ctx.arc(OX, OY, R0, 0, 6.2832); ctx.stroke();
+      ctx.beginPath();
+      ctx.lineWidth = 34 * (1 - ew);
+      ctx.strokeStyle = alpha(NEW.acc, .09 * (1 - ew));
+      ctx.arc(OX, OY, R0 * .84, 0, 6.2832); ctx.stroke();
+    }
     ctx.globalCompositeOperation = 'source-over';
 
     // --- 平移（越界后从另一侧回绕）---
+    var mul = 1 + .85 * w;
     for (var i = 0; i < parts.length; i++) {
       var p = parts[i];
-      p.x += p.vx; p.y += p.vy;
+      p.x += p.vx * mul + p.ix * w;
+      p.y += p.vy * mul + p.iy * w;
       if (p.x < -20) p.x = VW + 20; else if (p.x > VW + 20) p.x = -20;
       if (p.y < -20) p.y = VH + 20; else if (p.y > VH + 20) p.y = -20;
     }
 
     // --- 连线：先做轴对齐快速排除，再算平方距离，避免开方 ---
     ctx.lineWidth = 1;
-    ctx.strokeStyle = CFG.line;
+    ctx.strokeStyle = COL.line;
     ctx.beginPath();
     for (var a = 0; a < parts.length; a++) {
       var pa = parts[a];
@@ -391,34 +897,59 @@ canvas{display:block;width:100%;height:100%}
     }
     ctx.stroke();
 
-    // --- 粒子点 ---
-    ctx.fillStyle = CFG.dot;
-    for (var k = 0; k < parts.length; k++) {
-      var q = parts[k];
-      ctx.beginPath(); ctx.arc(q.x, q.y, q.r, 0, 6.2832); ctx.fill();
+    // --- 粒子点：切换瞬间跟着脉冲亮一点、大一点 ---
+    ctx.fillStyle = w > 0 ? alpha(NEW.dot, Math.min(1, NEW.dot[3] * (1 + 1.6 * w)))
+                          : COL.dot;
+    var rr = 1 + .5 * w;
+    for (var kk = 0; kk < parts.length; kk++) {
+      var q = parts[kk];
+      ctx.beginPath(); ctx.arc(q.x, q.y, q.r * rr, 0, 6.2832); ctx.fill();
     }
 
     requestAnimationFrame(loop);
   }
 
   resize();
-  requestAnimationFrame(loop);
+  requestAnimationFrame(function (t) {
+    if (!start) start = t;
+    requestAnimationFrame(loop);
+  });
 })();
 </script></body></html>"""
 
 
 def particle_background(enabled: bool = True) -> None:
-    """注入全页粒子背景（占位元素在 DOM 里，真正的绘制发生在被放大的 iframe 内）。"""
+    """注入全页粒子背景（占位元素在 DOM 里，真正的绘制发生在被放大的 iframe 内）。
+
+    主题刚切换过时，``sync_theme()`` 会留下旧色板和归一化圆心，这里取出来塞进 CFG：
+    画布于是从旧色板补间到新色板，同时从圆心炸出一圈冲击波、把粒子往外推一下。
+    两个键都是 ``pop`` 走的 —— 动效只跑这一轮，下一轮 HTML 不再含 ``prev``/``origin``，
+    iframe 的 srcdoc 又变回去，动画自然收场。
+    """
     t = theme()
+    prev = st.session_state.pop(_THEME_PREV_KEY, None)
+    origin = st.session_state.pop(_THEME_SHOCK_KEY, None)
     cfg = {
         "bg": t["p_bg"],
         "dot": t["p_dot"] if enabled else "rgba(0,0,0,0)",
         "line": t["p_line"] if enabled else "rgba(0,0,0,0)",
         "glow1": t["p_glow1"] if enabled else "rgba(0,0,0,0)",
         "glow2": t["p_glow2"] if enabled else "rgba(0,0,0,0)",
+        "acc": t["accent"],
         "link": 140,
         "density": 1.0,
+        "tween": 0.72 if prev is not None else 0.0,
     }
+    if prev is not None:
+        cfg["prev"] = {
+            "bg": prev["p_bg"],
+            "dot": prev["p_dot"] if enabled else "rgba(0,0,0,0)",
+            "line": prev["p_line"] if enabled else "rgba(0,0,0,0)",
+            "glow1": prev["p_glow1"] if enabled else "rgba(0,0,0,0)",
+            "glow2": prev["p_glow2"] if enabled else "rgba(0,0,0,0)",
+            "acc": prev["accent"],
+        }
+        cfg["origin"] = [origin[0], origin[1]] if origin else [0.5, 0.5]
     html = _PARTICLES_HTML.replace("__CFG__", json.dumps(cfg)).replace("__BG__", t["p_bg"])
     try:
         embed = getattr(st, "iframe", None)  # Streamlit >= 1.63
@@ -913,6 +1444,7 @@ def render_sidebar() -> dict:
 
     # ---------------- ⑤ 界面 ----------------
     sb.markdown("**⑤ 界面**")
+    render_theme_sidebar(sb)
     particles = sb.toggle(
         "粒子背景",
         value=True,
@@ -3995,7 +4527,9 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
-    inject_css()
+    # 主题判定必须在 inject_css() 之前 —— 覆盖动画要跟着同一轮的 CSS 一起进 DOM
+    wipe = sync_theme()
+    inject_css(wipe=wipe)
 
     params = render_sidebar()
     run_clicked = params.pop("run")
@@ -4003,6 +4537,7 @@ def main() -> None:
     particles_on = params.pop("particles", True)
 
     particle_background(enabled=bool(particles_on))
+    render_theme_quick()
 
     if run_clicked or refresh_clicked:
         p = _analysis_params(params, use_cache=not refresh_clicked)
