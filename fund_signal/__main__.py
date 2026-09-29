@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .advice import build_advice
 from .config import DEFAULT_BENCHMARKS, Config
 from .pipeline import run_analysis
 from .utils import human_number, log
@@ -81,6 +82,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-realtime",
         action="store_true",
         help="关闭实时能力（不补齐最新净值、不抓盘中估值，速度更快）",
+    )
+    p.add_argument(
+        "--capital",
+        type=float,
+        default=10000.0,
+        help="可投入本金（元），仅用于把建议仓位换算成金额（默认 10000）",
+    )
+    p.add_argument(
+        "--holding",
+        action="store_true",
+        help="当前已持有该基金 —— 只有开启后才会给出「按规则减仓」类建议",
     )
     return p
 
@@ -213,6 +225,13 @@ def main(argv: list[str] | None = None) -> int:
         print("\n【提示】")
         for n in result.notes:
             print(f"  · {n}")
+
+    # ---------------------------------------------------------- 操作建议
+    # 放在最后，是因为它是**结论**：上面所有数字都是它的证据。
+    # 只输出一个概率而不回答「所以呢」，等于把决策成本原样退还给使用者。
+    print(f"\n{LINE}")
+    print(build_advice(result, capital=args.capital, holding=args.holding).text())
+    print(LINE)
 
     print(f"\n{LINE}")
     print("  免责声明：本项目为量化分析工具，输出的是统计信号，不构成任何投资建议。")

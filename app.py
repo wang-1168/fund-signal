@@ -47,6 +47,7 @@ from sklearn.metrics import (
 from fund_signal import audit
 from fund_signal import data as dt
 from fund_signal import events as ev
+from fund_signal.advice import build_advice
 from fund_signal.backtest import backtest_threshold, sweep_thresholds
 from fund_signal.config import (
     CALENDAR_FEATURES,
@@ -619,6 +620,47 @@ body{background:transparent!important}
 @keyframes fsRise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
 @keyframes fsGlow{0%,100%{opacity:.55}50%{opacity:1}}
 .fs-pulse{animation:fsGlow 2.6s ease-in-out infinite}
+
+/* ---------------- 「操作建议」卡片 ----------------
+   左侧竖条按建议档位换色，一眼看出是「别动」还是「可以动手」。
+   档位 → 颜色：no_edge / cut = bad，watch = warn，probe = info，build = good。 */
+.fs-adv{position:relative;border:1px solid var(--border);border-radius:16px;
+  padding:16px 18px 14px 20px;background:var(--glass);backdrop-filter:blur(10px);
+  margin:2px 0 6px;overflow:hidden;animation:fsRise .5s ease-out both}
+.fs-adv::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;
+  background:var(--info);border-radius:16px 0 0 16px}
+.fs-adv.no_edge::before,.fs-adv.cut::before{background:var(--bad)}
+.fs-adv.watch::before{background:var(--warn)}
+.fs-adv.probe::before{background:var(--info)}
+.fs-adv.build::before{background:var(--good)}
+.fs-adv-h{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
+.fs-adv-tag{font-size:13px;font-weight:750;padding:3px 12px;border-radius:999px;
+  border:1px solid currentColor;letter-spacing:.4px;white-space:nowrap}
+.fs-adv.no_edge .fs-adv-tag,.fs-adv.cut .fs-adv-tag{color:var(--bad)}
+.fs-adv.watch .fs-adv-tag{color:var(--warn)}
+.fs-adv.probe .fs-adv-tag{color:var(--info)}
+.fs-adv.build .fs-adv-tag{color:var(--good)}
+.fs-adv-hl{font-size:16.5px;font-weight:750;color:var(--text);line-height:1.5;flex:1 1 300px}
+.fs-adv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(252px,1fr));
+  gap:13px;margin-top:13px}
+.fs-adv-col{background:var(--band);border:1px solid var(--border);border-radius:11px;
+  padding:10px 13px}
+.fs-adv-col h5{margin:0 0 7px;font-size:12.5px;font-weight:700;color:var(--muted);
+  letter-spacing:.7px}
+.fs-adv-col ul{margin:0;padding-left:16px}
+.fs-adv-col li{font-size:12.8px;line-height:1.75;color:var(--text)}
+.fs-adv-col li+li{margin-top:6px}
+.fs-adv-col li::marker{color:var(--accent)}
+.fs-adv-col b,.fs-adv-col u{color:var(--accent);font-weight:700}
+.fs-adv-col u{text-decoration:none;border-bottom:1px dashed var(--accent)}
+.fs-adv-run{display:flex;gap:26px;flex-wrap:wrap;margin-top:13px;padding-top:11px;
+  border-top:1px dashed var(--border)}
+.fs-adv-run div{font-size:12.5px;color:var(--muted)}
+.fs-adv-run span{font-size:17px;font-weight:750;color:var(--text);margin-left:7px;
+  vertical-align:-1px}
+.fs-adv-risk{margin-top:11px;font-size:12.5px;line-height:1.72;color:var(--muted)}
+.fs-adv-risk b{color:var(--warn)}
+.fs-adv-foot{margin-top:9px;font-size:11.5px;color:var(--muted);opacity:.9}
 </style>
 """
 
@@ -1453,6 +1495,28 @@ def render_sidebar() -> dict:
     )
 
     sb.divider()
+
+    # ---------------- ⑥ 建议参数 ----------------
+    # 这两个参数**不参与任何训练或回测**，只影响「📌 操作建议」页把比例换算成金额、
+    # 以及要不要给出「减仓」类建议。分开放在这里，是为了让「改了它结果为什么没变」
+    # 这个疑问不会发生。
+    sb.markdown("**⑥ 建议参数**")
+    capital = sb.number_input(
+        "可投入本金（元）",
+        min_value=0.0,
+        value=10000.0,
+        step=1000.0,
+        key="fs_capital",
+        help="只用来把建议仓位换算成具体金额，不参与训练、回测与任何指标计算。",
+    )
+    holding = sb.toggle(
+        "当前已持有该基金",
+        value=False,
+        key="fs_holding",
+        help="只有已持有时才会给出「减仓」类建议 —— 没有仓位就没有减仓可言。",
+    )
+
+    sb.divider()
     c1, c2 = sb.columns(2)
     run = c1.button("🚀 开始分析", type="primary", width="stretch", key="fs_run")
     refresh = c2.button(
@@ -1479,6 +1543,8 @@ def render_sidebar() -> dict:
         calibrate=calibrate,
         embargo=embargo,
         particles=particles,
+        capital=float(capital),
+        holding=bool(holding),
         run=run,
         refresh=refresh,
     )
@@ -1903,6 +1969,87 @@ def render_latest_feature_position(res) -> None:
         "z 分数衡量当前值偏离历史均值多少个标准差。偏离越大，模型这一期的输入"
         "越处于历史少见的区域——**样本外外推的风险也越高**。"
     )
+
+
+# ================================================================= 操作建议
+def _yuan(v: float) -> str:
+    return "—" if v is None or v != v else f"{v:,.0f} 元"
+
+
+def _advice_col(title: str, items: list[str]) -> str:
+    lis = "".join(f"<li>{x}</li>" for x in items)
+    return f'<div class="fs-adv-col"><h5>{title}</h5><ul>{lis}</ul></div>'
+
+
+def render_advice(res, *, capital: float, holding: bool) -> None:
+    """把统计信号压成一条能照着做的结论。
+
+    这是**结论页**：其余 9 个标签页都是它的证据。刻意放在第一个标签页 ——
+    「先给一堆数字、结论让自己拼」正是多数基金工具最让人恼火的地方。
+
+    三件事必须同时出现，缺一个这条建议就不成立：
+    ① 一个明确动作；② 支撑它的实测数字；③ 什么条件下改主意。
+    """
+    a = build_advice(res, capital=capital, holding=holding)
+
+    section(
+        "操作建议",
+        f"{res.fund_name} · 特征日 "
+        f"{res.latest_date.date() if res.latest_date is not None else '—'}"
+        f" · 其余标签页都是这条结论的证据",
+    )
+
+    st.markdown(_advice_card(a), unsafe_allow_html=True)
+
+    section("档位规则", "什么情况会给出哪一档建议 —— 没有黑箱")
+    note(
+        "<b>① 不建议操作</b>（红色竖条）：样本外准确率没超过多数类基线 +2pp，"
+        "概率再好看也不构成方向依据。<br>"
+        "<b>② 观察等待</b>：模型过了门槛，但概率还没到建仓线（默认 0.52）。<br>"
+        "<b>③ 小仓试探</b>：过门槛且概率进入映射区间 —— 仓位按线性映射给，不做满。<br>"
+        "<b>④ 分批建仓</b>：概率到满仓阈值（默认 0.62）—— 第一笔只做一半，"
+        "净值更新后再补。<br>"
+        "<b>⑤ 按规则减仓</b>：已持有且概率跌破空仓线 —— 先减半，再跌破就清掉。<br>"
+        "门槛值可在侧边栏「② 预测任务」与「🧭 风控与仓位」页调整，本页与它们保持一致。",
+        "info",
+    )
+
+    with st.expander("📋 纯文本版（可直接复制到笔记 / 交易日志）"):
+        st.code(a.text(), language="text")
+
+    st.caption(
+        "**这条建议怎么来的**　它是机械推导，没有人工修饰：先看模型的样本外边际是否越过 "
+        "+2pp 门槛，再用「概率 → 仓位」线性映射换算仓位，最后按本金换算金额。"
+        "它刻意**不预测涨跌幅** —— 本项目已用 3 基金 × 4 周期 × 2 模型的实测证明这个模型"
+        "没有这个能力。"
+    )
+
+
+def _advice_card(adv) -> str:
+    """渲染建议卡片本体。档位写在 class 上，由 CSS 决定竖条与标签颜色。"""
+    parts = [
+        f'<div class="fs-adv {adv.level}">',
+        '<div class="fs-adv-h">',
+        f'<span class="fs-adv-tag">{adv.stance}</span>',
+        f'<span class="fs-adv-hl">{adv.headline}</span>',
+        "</div>",
+        '<div class="fs-adv-grid">',
+        _advice_col("依据", adv.because),
+        _advice_col("怎么做", adv.actions),
+        _advice_col("什么情况下回来重看", adv.triggers),
+        "</div>",
+        '<div class="fs-adv-run">',
+        f"<div>最新上涨概率<span>{fpct(adv.prob, 1)}</span></div>",
+        f"<div>建议仓位<span>{fpct(adv.position, 1)}</span></div>",
+        f"<div>对应金额<span>{_yuan(adv.amount)}</span></div>",
+        f"<div>可投入本金<span>{_yuan(adv.capital)}</span></div>",
+        "</div>",
+        f'<div class="fs-adv-risk">最需要防的：{adv.risk}</div>',
+        '<div class="fs-adv-foot">规则化输出：由样本外实测边际、校准后概率、'
+        "交易成本与仓位映射机械推导。不预测涨跌幅，不构成投资建议。</div>",
+        "</div>",
+    ]
+    return _flat("".join(parts))
 
 
 def render_overview(res) -> None:
@@ -4535,6 +4682,8 @@ def main() -> None:
     run_clicked = params.pop("run")
     refresh_clicked = params.pop("refresh")
     particles_on = params.pop("particles", True)
+    capital = float(params.pop("capital", 10000.0))
+    holding = bool(params.pop("holding", False))
 
     particle_background(enabled=bool(particles_on))
     render_theme_quick()
@@ -4568,6 +4717,7 @@ def main() -> None:
 
     tabs = st.tabs(
         [
+            "📌 操作建议",
             "📊 总览",
             "🎯 信号详情",
             "📅 事件与风险",
@@ -4580,22 +4730,24 @@ def main() -> None:
         ]
     )
     with tabs[0]:
-        render_overview(result)
+        render_advice(result, capital=capital, holding=holding)
     with tabs[1]:
-        render_prediction(result)
+        render_overview(result)
     with tabs[2]:
-        render_events(result)
+        render_prediction(result)
     with tabs[3]:
-        render_model(result)
+        render_events(result)
     with tabs[4]:
-        render_backtest(result)
+        render_model(result)
     with tabs[5]:
-        render_risk(result)
+        render_backtest(result)
     with tabs[6]:
-        render_audit(result)
+        render_risk(result)
     with tabs[7]:
-        render_data(result)
+        render_audit(result)
     with tabs[8]:
+        render_data(result)
+    with tabs[9]:
         render_raw(result)
 
     st.divider()

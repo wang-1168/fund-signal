@@ -13,6 +13,7 @@ events     : 日程事件日历 + 事件影响检验 + 安慰剂检验
 model      : 时序交叉验证与模型训练（LightGBM / 逻辑回归）
 backtest   : 基于概率阈值的策略回测
 metrics    : 分类与绩效评估指标
+advice     : 把统计信号压成可执行建议（含档位判定与再评估条件）
 pipeline   : 端到端流水线（CLI 与 Streamlit 共用）
 
 顶层快捷用法
@@ -37,7 +38,7 @@ import warnings as _warnings
 
 from .config import Config
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "__version__",
